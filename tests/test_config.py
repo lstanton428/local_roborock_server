@@ -557,3 +557,16 @@ def test_load_config_rejects_invalid_trusted_proxy(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="network.trusted_proxies entry 'traefik'"):
         load_config(config_file)
+
+
+def test_admin_allowed_networks_parse_and_validate(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    text = config_file.read_text(encoding="utf-8").replace(
+        "[admin]\n", '[admin]\nallowed_networks = ["192.168.8.0/24", "100.64.0.0/10"]\n', 1
+    )
+    config_file.write_text(text, encoding="utf-8")
+    assert load_config(config_file).admin.allowed_networks == ("192.168.8.0/24", "100.64.0.0/10")
+
+    config_file.write_text(text.replace('"192.168.8.0/24"', '"not-a-network"'), encoding="utf-8")
+    with pytest.raises(ValueError, match="admin.allowed_networks"):
+        load_config(config_file)

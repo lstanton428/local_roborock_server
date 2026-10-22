@@ -1573,3 +1573,49 @@ def test_execute_scene_hydrates_missing_zone_ranges_from_mqtt(tmp_path: Path) ->
     persisted_outer = json.loads(scene["param"])
     persisted_step = json.loads(persisted_outer["action"]["items"][0]["param"])
     assert persisted_step["params"]["data"][0]["zones"][0]["range"] == [32800, 22750, 34550, 25350]
+
+
+def test_admin_routes_are_limited_to_allowed_networks(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    public = TestClient(supervisor.app, client=("203.0.113.7", 40000))
+    for path in ("/admin", "/admin/", "/admin/api/status", "/ui/api/health"):
+        response = public.get(path)
+        assert response.status_code == 403, path
+        assert "not available from this network" in response.json()["error"]
+    assert public.post("/admin/api/login", json={"password": "correct horse battery staple"}).status_code == 403
+
+    # Protocol routes stay reachable; only the dashboard is limited.
+    assert public.post(
+        "/api/v5/auth/email/login/code",
+        json={"email": "user@example.com", "code": "123456"},
+    ).status_code == 200
+
+    for client_host in ("100.101.102.103", "127.0.0.1", "::ffff:192.168.1.20", "fd7a:115c:a1e0::1"):
+        allowed = TestClient(supervisor.app, client=(client_host, 40000))
+        assert allowed.get("/admin").status_code == 200, client_host
+
+
+def test_admin_allowed_networks_can_be_configured(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    config = replace(config, admin=replace(config.admin, allowed_networks=("192.168.8.0/24",)))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    assert TestClient(supervisor.app, client=("192.168.8.40", 1)).get("/admin").status_code == 200
+    assert TestClient(supervisor.app, client=("192.168.1.50", 1)).get("/admin").status_code == 403
+
+
+def test_admin_network_check_uses_forwarded_address_from_trusted_proxy(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    proxy = TestClient(supervisor.app, client=("127.0.0.1", 40000))
+
+    assert proxy.get("/admin", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 403
+    assert proxy.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 200
+
+    untrusted = TestClient(supervisor.app, client=("203.0.113.8", 40000))
+    assert untrusted.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 403

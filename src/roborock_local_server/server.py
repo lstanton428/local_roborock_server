@@ -7,6 +7,7 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -1853,8 +1854,37 @@ class ReleaseSupervisor:
                 return JSONResponse({"error": "Not Found"}, status_code=404)
             return await self._handle_roborock_request(request)
 
+    @staticmethod
+    def _is_admin_path(path: str) -> bool:
+        return path == "/admin" or path.startswith(("/admin/", "/ui/api/"))
+
+    def _admin_client_allowed(self, client_host: str) -> bool:
+        try:
+            address = ipaddress.ip_address(client_host)
+        except ValueError:
+            return False
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return any(
+            address in ipaddress.ip_network(network, strict=False)
+            for network in self.config.admin.allowed_networks
+        )
+
+    async def _admin_network_guard(self, request: Request, call_next: Any) -> Response:
+        if self._is_admin_path(request.url.path):
+            client_host = request.client.host if request.client else ""
+            if not self._admin_client_allowed(client_host):
+                return JSONResponse(
+                    {"error": "The admin dashboard is not available from this network."},
+                    status_code=403,
+                )
+        return await call_next(request)
+
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Roborock Local Server", docs_url=None, redoc_url=None, openapi_url=None)
+        # Added before ProxyHeadersMiddleware so it runs inside it and sees the
+        # forwarded client address from trusted proxies.
+        app.middleware("http")(self._admin_network_guard)
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=list(self.config.network.trusted_proxies))
         if self.enable_standalone_admin:
             register_standalone_admin_routes(

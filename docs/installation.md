@@ -147,6 +147,8 @@ Use [Home Assistant](home_assistant.md) as the installation guide if you want to
 
 1. Open the admin dashboard at `https://api-roborock.example.com:555/admin` by default, or `https://api-roborock.example.com:YOUR_HTTPS_PORT/admin` if you chose a custom HTTPS port.
 
+   The dashboard only answers clients on loopback, private LAN ranges and Tailscale's `100.64.0.0/10`; anything else gets HTTP 403. Set `admin.allowed_networks` (`admin_allowed_networks` in the add-on) to change that list. The Roborock API on the same port is not affected.
+
 2. If the page does not load, check the container and DNS before onboarding:
 
    ```bash

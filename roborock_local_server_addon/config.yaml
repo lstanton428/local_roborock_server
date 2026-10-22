@@ -84,6 +84,7 @@ options:
   admin_password: ""
   protocol_login_email: ""
   protocol_login_pin: ""
+  admin_allowed_networks: []
   turn_mode: "disabled"
   turn_host: ""
   turn_port: 3478
@@ -112,6 +113,8 @@ schema:
   admin_password: password
   protocol_login_email: email
   protocol_login_pin: password
+  admin_allowed_networks:
+    - str?
   turn_mode: list(disabled|provided|external)?
   turn_host: str?
   turn_port: port?

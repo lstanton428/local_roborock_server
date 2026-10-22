@@ -85,6 +85,18 @@ class AdminConfig:
     new_connections_enabled: bool
     protocol_login_email: str
     protocol_login_pin_hash: str
+    # Client networks allowed to reach /admin and /ui/api. Defaults to
+    # loopback, private LAN ranges and the CGNAT range Tailscale uses.
+    allowed_networks: tuple[str, ...] = (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
 
 
 @dataclass(frozen=True)
@@ -357,6 +369,11 @@ def load_config(path: str | Path) -> AppConfig:
             protocol_login_pin_hash=_require_non_empty(
                 admin.get("protocol_login_pin_hash"),
                 "admin.protocol_login_pin_hash",
+            ),
+            allowed_networks=_as_trusted_proxies(
+                admin.get("allowed_networks"),
+                "admin.allowed_networks",
+                AdminConfig.allowed_networks,
             ),
         ),
         turn=TurnConfig(

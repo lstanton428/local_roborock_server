@@ -17,7 +17,15 @@ from roborock_local_server.log_retention import iter_log_lines
 from .data_helpers import utcnow_iso
 
 
-_TRACE_LINE_RE = re.compile(r"\[conn (?P<conn>\S+) (?P<direction>c2b|b2c)\] (?P<packet>[A-Z_0-9]+) .* hex=(?P<hex>[0-9a-fA-F]*)\s*$")
+# Anchored to setup_file_logger's "<asctime> [<level>] <message>" format so text
+# inside another message (a logged username, say) can never pass as a trace line.
+_LOG_LINE_PREFIX = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \[INFO\] "
+_TRACE_LINE_RE = re.compile(
+    _LOG_LINE_PREFIX
+    + r"\[conn (?P<conn>\d+) (?P<direction>c2b|b2c)\] (?P<packet>[A-Z_0-9]+) len=\d+"
+    + r"(?: hex=(?P<hex>[0-9a-fA-F]*)\s*$)?"
+)
+_PROXY_START_LINE_RE = re.compile(_LOG_LINE_PREFIX + r"(?:TLS|Plain) MQTT proxy listening on ")
 
 
 def _clean_str(value: Any) -> str:
@@ -723,16 +731,24 @@ class RuntimeCredentialsStore:
         awaiting_connack: dict[str, tuple[str, str]] = {}
         recovered_by_username: dict[str, str] = {}
         for raw_line in iter_log_lines(path):
-            match = _TRACE_LINE_RE.search(str(raw_line or ""))
+            line = str(raw_line or "")
+            match = _TRACE_LINE_RE.match(line)
             if match is None:
+                # Connection ids restart with each proxy process.
+                if _PROXY_START_LINE_RE.match(line):
+                    awaiting_connack.clear()
                 continue
             conn_id = match.group("conn")
-            try:
-                packet = bytes.fromhex(match.group("hex"))
-            except ValueError:
-                continue
             if match.group("packet") == "CONNECT" and match.group("direction") == "c2b":
+                # Any CONNECT on this conn id, even one logged without its bytes,
+                # replaces whatever an earlier CONNECT left pending.
                 awaiting_connack.pop(conn_id, None)
+                if match.group("hex") is None:
+                    continue
+                try:
+                    packet = bytes.fromhex(match.group("hex"))
+                except ValueError:
+                    continue
                 parsed = parse_mqtt_connect_packet(packet)
                 if parsed is None:
                     continue
@@ -742,6 +758,10 @@ class RuntimeCredentialsStore:
                     awaiting_connack[conn_id] = (username, password)
             elif match.group("packet") == "CONNACK" and match.group("direction") == "b2c":
                 pending = awaiting_connack.pop(conn_id, None)
+                try:
+                    packet = bytes.fromhex(match.group("hex") or "")
+                except ValueError:
+                    continue
                 # CONNACK is 0x20, remaining length, flags, then the return code.
                 if pending is not None and len(packet) >= 4 and packet[3] == 0:
                     recovered_by_username[pending[0]] = pending[1]

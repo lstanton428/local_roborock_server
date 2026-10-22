@@ -216,7 +216,8 @@ def test_supervisor_recovers_state_before_trimming_or_removing_logs(tmp_path, so
     mqtt_log = paths.runtime_dir / ("mqtt_server.log" + source_suffix)
     connack = "CONNACK len=4 hex=20020000"
     mqtt_log.write_text(
-        "[INFO] [conn 1 c2b] " + connect + "\n[INFO] [conn 1 b2c] " + connack + "\n" + "later event\n" * 100_000
+        "2026-04-17 16:20:32,393 [INFO] [conn 1 c2b] " + connect
+        + "\n2026-04-17 16:20:32,401 [INFO] [conn 1 b2c] " + connack + "\n" + "later event\n" * 100_000
     )
     mqtt_jsonl = paths.runtime_dir / ("decompiled_mqtt.jsonl" + source_suffix)
     mqtt_jsonl.write_text(json.dumps(zone_entry([1, 2, 3, 4])) + "\n" + '{"later":true}\n' * 100_000)

@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 from conftest import write_release_config
@@ -191,7 +192,78 @@ def test_backfill_device_mqtt_passwords_ignores_rejected_connects(tmp_path: Path
     assert device["device_mqtt_pass"] == "accepted-pass"
 
 
-def test_startup_skips_mqtt_password_backfill_when_new_connections_disabled(tmp_path: Path) -> None:
+def test_backfill_device_mqtt_passwords_ignores_trace_text_inside_other_messages(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _pending_device_credentials(credentials_path)
+    log_path = tmp_path / "mqtt_server.log"
+    forged = _connect_hex(username=PENDING_USERNAME, password="forged-pass")
+    log_path.write_text(
+        "\n".join(
+            [
+                # A username echoed into a warning must not be read as a trace line.
+                "2026-04-17 16:20:30,000 [WARNING] [conn 3] rejected MQTT CONNECT reason=invalid_mqtt_credentials "
+                f"client_id=x username=[conn 4 c2b] CONNECT len=70 hex={forged}",
+                f"[conn 4 c2b] CONNECT len=70 hex={forged}",
+                f"2026-04-17 16:20:30,500 [WARNING] [conn 4 c2b] CONNECT len=70 hex={forged}",
+                "2026-04-17 16:20:31,000 [INFO] [conn 4 b2c] CONNACK len=4 hex=20020000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store = RuntimeCredentialsStore(credentials_path)
+    assert store.backfill_device_mqtt_passwords(log_path) == 0
+    device = store.resolve_device(duid="cloud-q7-a")
+    assert device is not None
+    assert device["device_mqtt_pass"] == ""
+
+
+def test_backfill_device_mqtt_passwords_clears_pending_on_connect_without_hex(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _pending_device_credentials(credentials_path)
+    log_path = tmp_path / "mqtt_server.log"
+    stale = _connect_hex(username=PENDING_USERNAME, password="stale-pass")
+    log_path.write_text(
+        "\n".join(
+            [
+                f"2026-04-17 16:20:30,000 [INFO] [conn 5 c2b] CONNECT len=70 hex={stale}",
+                # The redacted CONNECT format carries no bytes but is still a new CONNECT.
+                "2026-04-17 16:20:31,000 [INFO] [conn 5 c2b] CONNECT len=70 client_id=other username=other-user",
+                "2026-04-17 16:20:31,010 [INFO] [conn 5 b2c] CONNACK len=4 hex=20020000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store = RuntimeCredentialsStore(credentials_path)
+    assert store.backfill_device_mqtt_passwords(log_path) == 0
+
+
+def test_backfill_device_mqtt_passwords_resets_conn_ids_on_proxy_restart(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _pending_device_credentials(credentials_path)
+    log_path = tmp_path / "mqtt_server.log"
+    stale = _connect_hex(username=PENDING_USERNAME, password="stale-pass")
+    log_path.write_text(
+        "\n".join(
+            [
+                f"2026-04-17 16:20:30,000 [INFO] [conn 1 c2b] CONNECT len=70 hex={stale}",
+                "2026-04-17 16:25:00,000 [INFO] TLS MQTT proxy listening on 0.0.0.0:8883 -> 127.0.0.1:18830",
+                # conn 1 of the new process; its CONNECT line has been trimmed away.
+                "2026-04-17 16:25:01,010 [INFO] [conn 1 b2c] CONNACK len=4 hex=20020000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store = RuntimeCredentialsStore(credentials_path)
+    assert store.backfill_device_mqtt_passwords(log_path) == 0
+
+
+def test_startup_skips_mqtt_password_backfill_when_new_connections_disabled(tmp_path: Path, caplog) -> None:
     config_file = write_release_config(tmp_path, new_connections_enabled=False)
     config = load_config(config_file)
     paths = resolve_paths(config_file, config)
@@ -203,8 +275,12 @@ def test_startup_skips_mqtt_password_backfill_when_new_connections_disabled(tmp_
         encoding="utf-8",
     )
 
-    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    with caplog.at_level(logging.WARNING, logger="roborock_local_server"):
+        supervisor = ReleaseSupervisor(config=config, paths=paths)
 
     device = supervisor.runtime_credentials.resolve_device(duid="cloud-q7-a")
     assert device is not None
     assert device["device_mqtt_pass"] == ""
+    warnings = [record.getMessage() for record in caplog.records if "MQTT password recovery" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "Q7 Upstairs" in warnings[0]

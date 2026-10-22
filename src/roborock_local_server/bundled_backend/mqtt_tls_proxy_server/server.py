@@ -22,6 +22,7 @@ from shared.runtime_state import RuntimeState
 from shared.zone_ranges_store import ZoneRangesStore
 
 from .command_handlers import RpcCommandRegistry
+from .topic_acl import TOPIC_ACL_MODES, TopicAcl, extract_subscribe_filters
 
 class MqttTlsProxy:
     _MAX_FIRST_PACKET_BYTES = 1024 * 1024
@@ -47,7 +48,11 @@ class MqttTlsProxy:
         zone_ranges_store: ZoneRangesStore | None = None,
         tls_enabled: bool = True,
         on_onboarding_credentials_learned: Callable[[], None] | None = None,
+        topic_acl_mode: str = "off",
     ) -> None:
+        if topic_acl_mode not in TOPIC_ACL_MODES:
+            raise ValueError(f"topic_acl_mode must be one of {', '.join(TOPIC_ACL_MODES)}")
+        self.topic_acl_mode = topic_acl_mode
         self.cert_file = cert_file
         self.key_file = key_file
         self.tls_enabled = tls_enabled
@@ -72,6 +77,7 @@ class MqttTlsProxy:
         self._conn_protocol_levels: dict[str, int] = {}
         self._conn_endpoints: dict[str, tuple[socket.socket, socket.socket]] = {}
         self._pending_onboarding_auth: dict[str, dict[str, str]] = {}
+        self._conn_topic_acls: dict[str, TopicAcl] = {}
         self._trace_queue: queue.Queue[tuple[str, str, bytes] | None] = queue.Queue()
         self._trace_thread: threading.Thread | None = None
         self._protocol_auth = (
@@ -709,6 +715,63 @@ class MqttTlsProxy:
         self._ensure_trace_worker()
         self._trace_queue.put((conn_id, direction, packet))
 
+    def _topic_acl_for_connection(
+        self,
+        *,
+        auth_reason: str,
+        connect_info: dict[str, Any] | None,
+        onboarding_candidate: dict[str, str] | None,
+    ) -> TopicAcl | None:
+        """Return the topic ACL for an authorized connection, or None for unrestricted."""
+        username = str((connect_info or {}).get("username") or "").strip()
+        if not username or auth_reason == "bootstrap":
+            return None
+        if auth_reason == "user_hash":
+            return TopicAcl.for_user(username)
+        did = str((onboarding_candidate or {}).get("did") or "").strip()
+        if not did and self.runtime_credentials is not None:
+            device = self.runtime_credentials.resolve_device_by_mqtt_username(username)
+            did = str((device or {}).get("did") or "").strip()
+        return TopicAcl.for_device(username, did)
+
+    def _packet_passes_topic_acl(self, conn_id: str, packet: bytes) -> bool:
+        """Check a client packet against its connection's ACL; False means drop the connection."""
+        if self.topic_acl_mode == "off":
+            return True
+        with self._lock:
+            acl = self._conn_topic_acls.get(conn_id)
+        if acl is None:
+            return True
+        violation = self._topic_acl_violation(acl, conn_id, packet)
+        if violation is None:
+            return True
+        enforce = self.topic_acl_mode == "enforce"
+        self.logger.warning(
+            "[conn %s] topic ACL %s %s identity=%s",
+            conn_id,
+            "blocked" if enforce else "would block",
+            violation,
+            acl.identity,
+        )
+        return not enforce
+
+    def _topic_acl_violation(self, acl: TopicAcl, conn_id: str, packet: bytes) -> str | None:
+        """Describe why a client packet breaks the ACL, or return None."""
+        packet_type = packet[0] >> 4
+        protocol_level = self._get_conn_protocol_level(conn_id)
+        if packet_type == 3:
+            topic, _payload = self._extract_publish(packet, protocol_level)
+            if not topic or not acl.allows_publish(topic):
+                return f"PUBLISH topic={topic or '<empty or alias>'}"
+        elif packet_type == 8:
+            filters = extract_subscribe_filters(packet, protocol_level)
+            if filters is None:
+                return "SUBSCRIBE malformed"
+            denied = [topic_filter for topic_filter in filters if not acl.allows_subscribe(topic_filter)]
+            if denied:
+                return f"SUBSCRIBE filters={','.join(denied)}"
+        return None
+
     def _relay(self, src: socket.socket, dst: socket.socket, conn_id: str, direction: str, frame_buf: bytearray) -> None:
         try:
             while self._running:
@@ -717,6 +780,10 @@ class MqttTlsProxy:
                     break
                 frame_buf.extend(chunk)
                 for packet in self._extract_packets(frame_buf):
+                    if direction == "c2b" and not self._packet_passes_topic_acl(conn_id, packet):
+                        # The packet's final bytes are in this chunk, so the broker
+                        # never receives the complete packet.
+                        return
                     self._queue_trace_packet(conn_id, direction, packet)
                 dst.sendall(chunk)
         except (OSError, ConnectionResetError, BrokenPipeError):
@@ -782,8 +849,18 @@ class MqttTlsProxy:
             self._register_conn_endpoints(conn_id, tls_conn, backend)
             if onboarding_candidate is not None:
                 self._set_pending_onboarding_auth(conn_id, onboarding_candidate)
+            topic_acl = self._topic_acl_for_connection(
+                auth_reason=auth_reason,
+                connect_info=connect_info,
+                onboarding_candidate=onboarding_candidate,
+            )
+            if topic_acl is not None:
+                with self._lock:
+                    self._conn_topic_acls[conn_id] = topic_acl
             c2b_frame_buf = bytearray(initial_remainder)
             for packet in self._extract_packets(c2b_frame_buf):
+                if not self._packet_passes_topic_acl(conn_id, packet):
+                    return
                 self._queue_trace_packet(conn_id, "c2b", packet)
             backend.sendall(connect_packet + initial_remainder)
             c2b = threading.Thread(
@@ -814,6 +891,7 @@ class MqttTlsProxy:
                 self.runtime_state.record_mqtt_disconnect(conn_id=conn_id)
             with self._lock:
                 self._conn_protocol_levels.pop(conn_id, None)
+                self._conn_topic_acls.pop(conn_id, None)
             self.logger.info("[conn %s] closed", conn_id)
 
     def start(self) -> threading.Thread:

@@ -84,6 +84,7 @@ options:
   admin_password: ""
   protocol_login_email: ""
   protocol_login_pin: ""
+  mqtt_topic_acl: "audit"
   turn_mode: "disabled"
   turn_host: ""
   turn_port: 3478
@@ -112,6 +113,7 @@ schema:
   admin_password: password
   protocol_login_email: email
   protocol_login_pin: password
+  mqtt_topic_acl: list(off|audit|enforce)?
   turn_mode: list(disabled|provided|external)?
   turn_host: str?
   turn_port: port?

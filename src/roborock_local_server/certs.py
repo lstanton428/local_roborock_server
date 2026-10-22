@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Iterable
 
@@ -197,6 +198,29 @@ class CertificateManager:
         )
         if not self.paths.cert_file.exists() or not self.paths.key_file.exists():
             raise RuntimeError("ACME completed without writing certificate files")
+        self._remove_superseded_wildcard_certificate(primary_domain)
+
+    def _remove_superseded_wildcard_certificate(self, primary_domain: str) -> None:
+        """Delete acme.sh's copy of a wildcard certificate that exact names replaced.
+
+        Releases before tls.wildcard issued base_domain plus *.base_domain. Once the
+        exact-name certificate is installed, that key is no longer used, so do not
+        keep a key for every subdomain on disk until it expires.
+        """
+        base_domain = self.config.tls.base_domain
+        if self.config.tls.wildcard or not base_domain or base_domain == primary_domain:
+            return
+        for directory_name in (base_domain, f"{base_domain}_ecc"):
+            domain_dir = self.paths.acme_dir / directory_name
+            conf_path = domain_dir / f"{base_domain}.conf"
+            try:
+                conf_text = conf_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if f"*.{base_domain}" not in conf_text:
+                continue
+            shutil.rmtree(domain_dir, ignore_errors=True)
+            LOG.info("Removed superseded wildcard certificate for %s from %s", base_domain, domain_dir)
 
     def _certificate_domains(self) -> tuple[str, list[str]]:
         stack_fqdn = self.config.network.stack_fqdn

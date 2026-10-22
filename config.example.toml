@@ -50,6 +50,8 @@ acme_server = "zerossl"
 # (the stack hostname without "api-"). Add any other names the vacuum must reach,
 # such as a separate camera domain, here. Set wildcard = true to issue
 # base_domain plus *.base_domain instead, as releases before this option did.
+# Once the exact-name certificate is installed, an older wildcard certificate
+# and its key are deleted from the ACME data directory.
 # extra_names = ["cam.example.com"]
 # wildcard = false
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .configure import hash_password
-from .config import LoggingConfig
+from .config import LoggingConfig, _as_ip_networks
 
 DEFAULT_OPTIONS: dict[str, Any] = {
     "stack_fqdn": "",
@@ -38,6 +37,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "protocol_login_email": "",
     "protocol_login_pin": "",
     "admin_allowed_networks": [],
+    "trusted_proxies": [],
     "turn_mode": "disabled",
     "turn_host": "",
     "turn_port": 3478,
@@ -130,22 +130,6 @@ def _require_email(value: object, *, field_name: str) -> str:
     if "@" not in text:
         raise ValueError(f"{field_name} must be an email address")
     return text
-
-
-def _as_network_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        raise ValueError("admin_allowed_networks must be a list of IP addresses or CIDR networks")
-    networks: list[str] = []
-    for item in value:
-        text = str(item or "").strip()
-        if not text:
-            continue
-        try:
-            ipaddress.ip_network(text, strict=False)
-        except ValueError as exc:
-            raise ValueError(f"admin_allowed_networks entry {text!r} is not a valid IP address or CIDR network") from exc
-        networks.append(text)
-    return networks
 
 
 def _require_pin(value: object, *, field_name: str) -> str:
@@ -268,7 +252,9 @@ def _render_config_toml(
     protocol_auth_enabled = True
     new_connections_enabled = True
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
-    admin_allowed_networks = _as_network_list(merged.get("admin_allowed_networks") or [])
+    # An empty option list means "use the server defaults", so it is not written.
+    admin_allowed_networks = _as_ip_networks(merged.get("admin_allowed_networks") or [], "admin_allowed_networks", ())
+    trusted_proxies = _as_ip_networks(merged.get("trusted_proxies") or [], "trusted_proxies", ())
     protocol_login_pin = _require_pin(merged.get("protocol_login_pin"), field_name="protocol_login_pin")
 
     password_hash = hash_password(admin_password)
@@ -321,6 +307,11 @@ def _render_config_toml(
         f"advertised_https_port = {advertised_https_port}",
         f"advertised_mqtt_tls_port = {advertised_mqtt_tls_port}",
         f"region = {_toml_string(region)}",
+        *(
+            [f"trusted_proxies = [{', '.join(_toml_string(item) for item in trusted_proxies)}]"]
+            if trusted_proxies
+            else []
+        ),
         "",
         "[broker]",
         f"mode = {_toml_string(broker_mode)}",

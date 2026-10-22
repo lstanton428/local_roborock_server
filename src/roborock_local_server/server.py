@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 from datetime import datetime, timezone
+import functools
 import hashlib
 import ipaddress
 import json
@@ -168,17 +169,61 @@ def _is_admin_path(path: str) -> bool:
     return path == "/admin" or path.startswith(("/admin/", "/ui/api/"))
 
 
+# Scope key holding the TCP peer before ProxyHeadersMiddleware rewrites "client".
+PEER_CLIENT_SCOPE_KEY = "roborock_local_server.peer_client"
+_FORWARDING_HEADERS = frozenset({b"x-forwarded-for", b"forwarded"})
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_ip_networks(entries: tuple[str, ...]) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    # Config entries are validated at load time; parse each list once, not per request.
+    return tuple(ipaddress.ip_network(entry, strict=False) for entry in entries)
+
+
+def _ip_in_networks(host: str, entries: tuple[str, ...], *, map_ipv4: bool = False) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if map_ipv4 and isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return any(address in network for network in _parse_ip_networks(entries))
+
+
+class PeerClientRecorder:
+    """Outer ASGI middleware that saves the TCP peer before proxy headers rewrite it."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in {"http", "websocket"}:
+            scope[PEER_CLIENT_SCOPE_KEY] = scope.get("client")
+        await self.app(scope, receive, send)
+
+
 class AdminNetworkGuard:
     """ASGI middleware that limits the admin dashboard to allowed client networks.
 
     It checks scope["path"], the path the router matches. request.url is rebuilt
     from the Host header, so a Host containing "#", "?" or "/" changes its path
     without changing where the request is routed.
+
+    A request with forwarding headers from a peer outside network.trusted_proxies
+    keeps the proxy's address as its client, so the real client is unknown and
+    the request is refused.
     """
 
-    def __init__(self, app: Any, *, is_allowed: Callable[[str], bool]) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        is_allowed: Callable[[str], bool],
+        is_trusted_proxy: Callable[[str], bool],
+    ) -> None:
         self.app = app
         self._is_allowed = is_allowed
+        self._is_trusted_proxy = is_trusted_proxy
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") == "http":
@@ -186,15 +231,26 @@ class AdminNetworkGuard:
             root_path = str(scope.get("root_path") or "")
             route_path = path[len(root_path):] if root_path and path.startswith(root_path) else path
             if _is_admin_path(path) or _is_admin_path(route_path):
-                client = scope.get("client")
-                if not self._is_allowed(str(client[0]) if client else ""):
-                    response = JSONResponse(
-                        {"error": "The admin dashboard is not available from this network."},
-                        status_code=403,
-                    )
-                    await response(scope, receive, send)
+                error = self._denial(scope)
+                if error:
+                    await JSONResponse({"error": error}, status_code=403)(scope, receive, send)
                     return
         await self.app(scope, receive, send)
+
+    def _denial(self, scope: dict[str, Any]) -> str:
+        client = scope.get("client")
+        peer = scope.get(PEER_CLIENT_SCOPE_KEY, client)
+        peer_host = str(peer[0]) if peer else ""
+        forwarded = any(name.lower() in _FORWARDING_HEADERS for name, _value in scope.get("headers") or ())
+        if forwarded and not self._is_trusted_proxy(peer_host):
+            return (
+                f"The admin dashboard received forwarding headers from {peer_host or 'an unknown address'}, "
+                "which is not in network.trusted_proxies, so the real client address is unknown. "
+                "Add the proxy's address to network.trusted_proxies."
+            )
+        if not self._is_allowed(str(client[0]) if client else ""):
+            return "The admin dashboard is not available from this network."
+        return ""
 
 
 def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
@@ -1888,23 +1944,24 @@ class ReleaseSupervisor:
             return await self._handle_roborock_request(request)
 
     def _admin_client_allowed(self, client_host: str) -> bool:
-        try:
-            address = ipaddress.ip_address(client_host)
-        except ValueError:
-            return False
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-            address = address.ipv4_mapped
-        return any(
-            address in ipaddress.ip_network(network, strict=False)
-            for network in self.config.admin.allowed_networks
-        )
+        return _ip_in_networks(client_host, self.config.admin.allowed_networks, map_ipv4=True)
+
+    def _is_trusted_proxy(self, peer_host: str) -> bool:
+        # Same match as ProxyHeadersMiddleware, which does not unwrap IPv4-mapped addresses.
+        return _ip_in_networks(peer_host, self.config.network.trusted_proxies)
 
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Roborock Local Server", docs_url=None, redoc_url=None, openapi_url=None)
         # Added before ProxyHeadersMiddleware so it runs inside it and sees the
         # forwarded client address from trusted proxies.
-        app.add_middleware(AdminNetworkGuard, is_allowed=self._admin_client_allowed)
+        app.add_middleware(
+            AdminNetworkGuard,
+            is_allowed=self._admin_client_allowed,
+            is_trusted_proxy=self._is_trusted_proxy,
+        )
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=list(self.config.network.trusted_proxies))
+        # Outermost, so the guard can tell which peer actually sent forwarding headers.
+        app.add_middleware(PeerClientRecorder)
         if self.enable_standalone_admin:
             register_standalone_admin_routes(
                 app=app,

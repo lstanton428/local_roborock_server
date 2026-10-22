@@ -659,3 +659,27 @@ def test_write_config_from_home_assistant_options_admin_allowed_networks(tmp_pat
         cloudflare_token_path=tmp_path / "cloudflare_token",
     )
     assert "allowed_networks" not in tomllib.loads(config_path.read_text(encoding="utf-8"))["admin"]
+
+
+def test_write_config_from_home_assistant_options_trusted_proxies(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    options = {
+        "stack_fqdn": "api-roborock.example.com",
+        "cert_file": "/ssl/fullchain.pem",
+        "key_file": "/ssl/privkey.pem",
+        "admin_password": "secret",
+        "protocol_login_email": "user@example.com",
+        "protocol_login_pin": "654321",
+    }
+    _write_options(options_path, options)
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.trusted_proxies == ("127.0.0.1", "::1")
+
+    _write_options(options_path, {**options, "trusted_proxies": ["172.30.32.0/23", " "]})
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.trusted_proxies == ("172.30.32.0/23",)
+
+    _write_options(options_path, {**options, "trusted_proxies": ["proxy.local"]})
+    with pytest.raises(ValueError, match="trusted_proxies entry 'proxy.local'"):
+        write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)

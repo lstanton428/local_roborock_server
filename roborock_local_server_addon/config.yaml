@@ -85,6 +85,7 @@ options:
   protocol_login_email: ""
   protocol_login_pin: ""
   admin_allowed_networks: []
+  trusted_proxies: []
   turn_mode: "disabled"
   turn_host: ""
   turn_port: 3478
@@ -114,6 +115,8 @@ schema:
   protocol_login_email: email
   protocol_login_pin: password
   admin_allowed_networks:
+    - str?
+  trusted_proxies:
     - str?
   turn_mode: list(disabled|provided|external)?
   turn_host: str?

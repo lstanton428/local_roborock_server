@@ -570,3 +570,16 @@ def test_admin_allowed_networks_parse_and_validate(tmp_path: Path) -> None:
     config_file.write_text(text.replace('"192.168.8.0/24"', '"not-a-network"'), encoding="utf-8")
     with pytest.raises(ValueError, match="admin.allowed_networks"):
         load_config(config_file)
+
+
+def test_admin_allowed_networks_rejects_an_explicit_empty_list(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    text = config_file.read_text(encoding="utf-8")
+    config_file.write_text(text.replace("[admin]\n", "[admin]\nallowed_networks = []\n", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"admin.allowed_networks is empty.*0\.0\.0\.0/0"):
+        load_config(config_file)
+
+    config_file.write_text(
+        text.replace("[admin]\n", '[admin]\nallowed_networks = ["0.0.0.0/0", "::/0"]\n', 1), encoding="utf-8"
+    )
+    assert load_config(config_file).admin.allowed_networks == ("0.0.0.0/0", "::/0")

@@ -1103,3 +1103,29 @@ def test_onboarding_candidate_from_trusted_proxy_still_requires_region_and_nc(tm
     assert authorized is False
     assert reason == "invalid_mqtt_credentials"
     assert candidate is None
+
+
+def test_trace_packet_never_logs_connect_password(tmp_path, caplog) -> None:
+    proxy = MqttTlsProxy(
+        cert_file=tmp_path / "fullchain.pem",
+        key_file=tmp_path / "privkey.pem",
+        listen_host="127.0.0.1",
+        listen_port=8883,
+        backend_host="127.0.0.1",
+        backend_port=1883,
+        localkey="test-local-key",
+        logger=logging.getLogger("test.mqtt_tls_proxy.redaction"),
+        decoded_jsonl=tmp_path / "decoded.jsonl",
+    )
+    password = "ff8922d24a9a9af81f18f35dcee9a5a5"
+    packet = _build_connect_packet(client_id="client-1", username="c25b14ceac358d2a", password=password)
+
+    with caplog.at_level(logging.INFO, logger="test.mqtt_tls_proxy.redaction"):
+        proxy._trace_packet("1", "c2b", packet)
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "CONNECT" in logged
+    assert "c25b14ceac358d2a" in logged
+    assert password not in logged
+    assert password.encode("utf-8").hex() not in logged
+    assert " hex=" not in logged

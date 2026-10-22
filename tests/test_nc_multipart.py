@@ -157,3 +157,19 @@ def test_x_forwarded_for_from_untrusted_client_is_ignored(supervisor):
     region_event = next(e for e in supervisor.runtime_state.recent_events() if e.get("route") == "region")
     assert region_event["remote"] == "10.1.6.99:54321"
     assert supervisor.runtime_state.pairing_snapshot()["target"]["last_ip"] == "10.1.6.99"
+
+
+def test_nc_plaintext_reply_keeps_local_key_out_of_trace(supervisor):
+    # No device key state for this DID, so the reply is not encrypted.
+    with TestClient(supervisor.app) as client:
+        response = client.get("/nc", params={"d": "9876543210987", "m": MODEL})
+
+    assert response.status_code == 200
+    local_key = response.json()["data"]["k"]
+    assert local_key
+
+    trace = supervisor.paths.http_jsonl_path.read_text(encoding="utf-8")
+    entry = json.loads(trace.splitlines()[-1])
+    assert entry["route"] == "nc_prepare"
+    assert entry["response_json"]["data"]["k"] == "<redacted>"
+    assert local_key not in trace

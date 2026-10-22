@@ -15,7 +15,8 @@ import signal
 import socket
 import threading
 from typing import Any
-from urllib.parse import parse_qs
+import re
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -163,12 +164,95 @@ def _request_value(
     return ""
 
 
+_LOG_REDACTED = "<redacted>"
+_SENSITIVE_LOG_HEADERS = frozenset({PROTOCOL_AUTH_SYNC_SECRET_HEADER, "authorization", "cookie"})
+# Compared after lowercasing and stripping non-alphanumerics, so "verify_code",
+# "verifyCode" and "verify-code" all match "verifycode".
+_SENSITIVE_LOG_FIELDS = frozenset(
+    {
+        "verifycode",
+        "emailcode",
+        "smscode",
+        "password",
+        "passwd",
+        "pwd",
+        "credential",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "localkey",
+        "secret",
+        "mqttpasswd",
+        "devicemqttpass",
+    }
+)
+# Login codes and PINs arrive as "code"; in responses "code" is the API status.
+_SENSITIVE_REQUEST_LOG_FIELDS = _SENSITIVE_LOG_FIELDS | {"code", "pin"}
+# rriot.s / rriot.h / rriot.k are the Hawk session, Hawk key and MQTT key.
+_SENSITIVE_RRIOT_FIELDS = frozenset({"s", "h", "k"})
+# An unencrypted /nc reply hands the vacuum its localKey as "k".
+_SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE = {"nc_prepare": _SENSITIVE_LOG_FIELDS | {"k"}}
+
+
 def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
     normalized = dict(headers)
     for key in list(normalized):
-        if str(key).strip().lower() == PROTOCOL_AUTH_SYNC_SECRET_HEADER:
-            normalized[key] = "<redacted>"
+        if str(key).strip().lower() in _SENSITIVE_LOG_HEADERS:
+            normalized[key] = _LOG_REDACTED
     return normalized
+
+
+def _normalized_log_field(name: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def _redact_for_log(value: Any, *, sensitive: frozenset[str] = _SENSITIVE_LOG_FIELDS, parent: str = "") -> Any:
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            field = _normalized_log_field(key)
+            if field in sensitive or (parent == "rriot" and field in _SENSITIVE_RRIOT_FIELDS):
+                redacted[key] = _LOG_REDACTED
+            else:
+                redacted[key] = _redact_for_log(item, sensitive=sensitive, parent=field)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_for_log(item, sensitive=sensitive, parent=parent) for item in value]
+    return value
+
+
+def _redact_http_trace_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Strip login codes, tokens and keys before a request is written to the trace."""
+    redacted = dict(entry)
+    for field in ("query", "body_json", "body_form"):
+        if field in redacted:
+            redacted[field] = _redact_for_log(redacted[field], sensitive=_SENSITIVE_REQUEST_LOG_FIELDS)
+    if "response_json" in redacted:
+        redacted["response_json"] = _redact_for_log(
+            redacted["response_json"],
+            sensitive=_SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE.get(str(redacted.get("route") or ""), _SENSITIVE_LOG_FIELDS),
+        )
+
+    query = redacted.get("query")
+    if isinstance(query, dict) and query != entry.get("query"):
+        path, _, _ = str(redacted.get("raw_path") or "").partition("?")
+        public_query = {key: values for key, values in query.items() if key != "__host"}
+        redacted["raw_path"] = f"{path}?{urlencode(public_query, doseq=True)}" if public_query else path
+
+    body_changed = redacted.get("body_json") != entry.get("body_json") or redacted.get("body_form") != entry.get(
+        "body_form"
+    )
+    if body_changed:
+        redacted.pop("body_b64", None)
+        redacted["body_redacted"] = True
+        if "body_json" in redacted:
+            redacted["body_text"] = json.dumps(redacted["body_json"], separators=(",", ":"))
+            # parse_qs turns a JSON body into one form key holding the whole raw body.
+            redacted["body_form"] = {"__json": [redacted["body_text"]]}
+        else:
+            form = redacted.get("body_form") or {}
+            redacted["body_text"] = urlencode(form, doseq=True)
+    return redacted
 
 
 def _extract_explicit_pid(
@@ -1110,7 +1194,7 @@ class ReleaseSupervisor:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("runtime_state record_http_event failed: %s", exc)
-            append_jsonl(self.context.http_jsonl, entry)
+            append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
             logger.info(
                 "%s %s host=%s route=%s status=%d body_sha256=%s",
                 request.method,
@@ -1147,7 +1231,7 @@ class ReleaseSupervisor:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("runtime_state record_http_event failed: %s", exc)
-            append_jsonl(self.context.http_jsonl, entry)
+            append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
             logger.info(
                 "%s %s host=%s route=%s status=%d body_sha256=%s",
                 request.method,
@@ -1183,7 +1267,7 @@ class ReleaseSupervisor:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("runtime_state record_http_event failed: %s", exc)
-            append_jsonl(self.context.http_jsonl, entry)
+            append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
             logger.info(
                 "%s %s host=%s route=%s status=%d body_sha256=%s",
                 request.method,
@@ -1218,7 +1302,7 @@ class ReleaseSupervisor:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("runtime_state record_http_event failed: %s", exc)
-                append_jsonl(self.context.http_jsonl, entry)
+                append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
                 logger.info(
                     "%s %s host=%s route=%s status=%d body_sha256=%s",
                     request.method,
@@ -1262,7 +1346,7 @@ class ReleaseSupervisor:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("runtime_state record_http_event failed: %s", exc)
-                append_jsonl(self.context.http_jsonl, entry)
+                append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
                 logger.info(
                     "%s %s host=%s route=%s status=%d body_sha256=%s",
                     request.method,
@@ -1307,7 +1391,7 @@ class ReleaseSupervisor:
                 )
             except Exception as record_exc:  # noqa: BLE001
                 logger.warning("runtime_state record_http_event failed: %s", record_exc)
-            append_jsonl(self.context.http_jsonl, entry)
+            append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
             logger.warning(
                 "%s %s host=%s route=%s plugin_source=%s error=%s",
                 request.method,
@@ -1343,7 +1427,7 @@ class ReleaseSupervisor:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("runtime_state record_http_event failed: %s", exc)
-            append_jsonl(self.context.http_jsonl, entry)
+            append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
             logger.info(
                 "%s %s host=%s route=%s plugin_source=%s cache=%s",
                 request.method,
@@ -1393,7 +1477,7 @@ class ReleaseSupervisor:
             # /nc just handed the vacuum its localKey; persist now instead of relying on an
             # onboarding client still polling the session (it may have timed out or exited).
             self.persist_active_onboarding_device()
-        append_jsonl(self.context.http_jsonl, entry)
+        append_jsonl(self.context.http_jsonl, _redact_http_trace_entry(entry))
         if key_cache is not None and key_capture_did:
             try:
                 key_cache.maybe_recover_async(key_capture_did)

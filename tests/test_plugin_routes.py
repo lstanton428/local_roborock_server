@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import urllib.parse
 from pathlib import Path
 
@@ -193,20 +194,35 @@ def test_non_plugin_routes_still_resolve_to_same_handlers(tmp_path: Path) -> Non
     assert payload["code"] == 200
 
 
+class _FakePluginContent:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.chunks_read = 0
+
+    async def iter_chunked(self, _size: int):
+        for chunk in self._chunks:
+            self.chunks_read += 1
+            yield chunk
+
+
 class _FakePluginResponse:
-    def __init__(self, status: int, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
+    def __init__(
+        self,
+        status: int,
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+        *,
+        chunks: list[bytes] | None = None,
+    ) -> None:
         self.status = status
         self.headers = headers or {}
-        self._body = body
+        self.content = _FakePluginContent(chunks if chunks is not None else [body])
 
     async def __aenter__(self) -> "_FakePluginResponse":
         return self
 
     async def __aexit__(self, *exc_info) -> bool:
         return False
-
-    async def read(self) -> bytes:
-        return self._body
 
 
 class _FakePluginSession:
@@ -284,7 +300,223 @@ def test_plugin_download_limits_redirect_chains(monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     loop_url = "https://files.roborock.com/iot/plugin/loop.zip"
-    _patch_plugin_session(monkeypatch, {loop_url: _FakePluginResponse(302, {"Location": loop_url})})
+    requested = _patch_plugin_session(monkeypatch, {loop_url: _FakePluginResponse(302, {"Location": loop_url})})
 
     with pytest.raises(RuntimeError, match="redirected more than"):
         asyncio.run(plugin_common.download_plugin_zip(loop_url))
+    assert len(requested) == plugin_common.PLUGIN_PROXY_MAX_REDIRECTS + 1
+
+
+def test_plugin_download_checks_every_redirect_hop(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    disallowed = "https://evil.example.com/iot/plugin/c.zip"
+    requested = _patch_plugin_session(
+        monkeypatch,
+        {
+            "https://files.roborock.com/iot/plugin/a.zip": _FakePluginResponse(
+                302, {"Location": "https://app-files.roborock.com/iot/plugin/b.zip"}
+            ),
+            "https://app-files.roborock.com/iot/plugin/b.zip": _FakePluginResponse(302, {"Location": disallowed}),
+            disallowed: _FakePluginResponse(200, {"Content-Type": "application/zip"}, b"evil"),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="disallowed host"):
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+    assert requested == [
+        "https://files.roborock.com/iot/plugin/a.zip",
+        "https://app-files.roborock.com/iot/plugin/b.zip",
+    ]
+
+
+def test_plugin_download_refuses_redirect_to_explicit_port(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    requested = _patch_plugin_session(
+        monkeypatch,
+        {
+            "https://files.roborock.com/iot/plugin/a.zip": _FakePluginResponse(
+                302, {"Location": "https://app-files.roborock.com:8443/iot/plugin/b.zip"}
+            ),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="disallowed host"):
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+    assert requested == ["https://files.roborock.com/iot/plugin/a.zip"]
+
+
+def test_allowed_plugin_source_requires_default_https_port() -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    assert plugin_common.is_allowed_plugin_source("https://files.roborock.com/iot/plugin/a.zip")
+    assert plugin_common.is_allowed_plugin_source("https://files.roborock.com:443/iot/plugin/a.zip")
+    assert not plugin_common.is_allowed_plugin_source("https://files.roborock.com:8443/iot/plugin/a.zip")
+    assert not plugin_common.is_allowed_plugin_source("https://files.roborock.com:80/iot/plugin/a.zip")
+    assert not plugin_common.is_allowed_plugin_source("https://files.roborock.com:notaport/iot/plugin/a.zip")
+
+
+def test_plugin_download_rejects_oversized_content_length_without_reading(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    source = "https://files.roborock.com/iot/plugin/a.zip"
+    response = _FakePluginResponse(
+        200,
+        {"Content-Length": str(plugin_common.PLUGIN_PROXY_MAX_BYTES + 1)},
+        b"small-body",
+    )
+    _patch_plugin_session(monkeypatch, {source: response})
+
+    with pytest.raises(RuntimeError, match="too large"):
+        asyncio.run(plugin_common.download_plugin_zip(source))
+    assert response.content.chunks_read == 0
+
+
+def test_plugin_download_stops_reading_streamed_oversize_body(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_BYTES", 10)
+    source = "https://files.roborock.com/iot/plugin/a.zip"
+    response = _FakePluginResponse(200, chunks=[b"123456"] * 100)
+    _patch_plugin_session(monkeypatch, {source: response})
+
+    with pytest.raises(RuntimeError, match="too large"):
+        asyncio.run(plugin_common.download_plugin_zip(source))
+    assert response.content.chunks_read == 2
+
+
+def test_plugin_download_accepts_body_at_size_limit(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_BYTES", 12)
+    source = "https://files.roborock.com/iot/plugin/a.zip"
+    _patch_plugin_session(
+        monkeypatch,
+        {source: _FakePluginResponse(200, {"Content-Length": "12"}, chunks=[b"123456", b"789012"])},
+    )
+
+    data, _content_type = asyncio.run(plugin_common.download_plugin_zip(source))
+    assert data == b"123456789012"
+
+
+def _known_plugin_sources() -> list[str]:
+    from https_server.routes.plugin import common as plugin_common
+
+    sources = list(plugin_common.LEGACY_CATEGORY_PLUGIN_SOURCES.values())
+    for records in (
+        plugin_common.APP_FEATURE_PLUGIN_LIST,
+        plugin_common.CATEGORY_PLUGIN_LIST,
+        plugin_common.APPPLUGIN_LIST,
+    ):
+        sources.extend(str(record["url"]) for record in records)
+    return sources
+
+
+def test_plugin_proxy_accepts_every_known_plugin_source(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    supervisor = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+    downloaded_sources: list[str] = []
+
+    async def fake_download(source_url: str) -> tuple[bytes, str]:
+        downloaded_sources.append(source_url)
+        return b"fake-zip-bytes", "application/zip"
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", fake_download)
+
+    known_sources = _known_plugin_sources()
+    assert len(known_sources) == 11
+    for source in known_sources:
+        assert plugin_common.is_canonical_plugin_source(source), source
+        proxied = plugin_common.plugin_proxy_url(supervisor.context, source)
+        response = client.get(proxied.removeprefix("https://api-roborock.example.com"))
+        assert response.status_code == 200, source
+        assert response.content == b"fake-zip-bytes", source
+    assert set(downloaded_sources) == set(known_sources)
+
+
+def test_plugin_proxy_rejects_non_canonical_sources(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    supervisor = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+
+    async def fail_download(source_url: str) -> tuple[bytes, str]:
+        raise AssertionError(f"download should not be called for {source_url}")
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", fail_download)
+
+    roborock = "https://files.roborock.com/iot/plugin/979bb22f91a24f10a8bafe232b4fb5ee.zip"
+    mi_img = "https://cdn.awsusor0.fds.api.mi-img.com/resources/iot/plugin/10320c51139848e9ade1e6bd231e15c8.zip"
+    blocked_sources = (
+        # query string / fragment variants
+        f"{roborock}?v=1",
+        f"{roborock}?",
+        f"{roborock}#frag",
+        f"{mi_img}?cache=bust",
+        # explicit ports, including the default one
+        roborock.replace("files.roborock.com", "files.roborock.com:443"),
+        roborock.replace("files.roborock.com", "files.roborock.com:8443"),
+        # userinfo and non-lowercase host/scheme
+        roborock.replace("files.roborock.com", "user@files.roborock.com"),
+        roborock.replace("files.roborock.com", "FILES.roborock.com"),
+        roborock.replace("https://", "HTTPS://"),
+        # non-canonical paths
+        roborock.replace("/iot/plugin/", "/iot/plugin/x/"),
+        roborock.replace("/iot/plugin/", "/iot//plugin/"),
+        roborock.replace("/iot/plugin/", "/iot/plugin/../plugin/"),
+        roborock.replace(".zip", ".ZIP"),
+        roborock.replace(".zip", ".zip;x"),
+        roborock.replace("979bb22f", "979BB22F"),
+        roborock.replace("979bb22f", "979bb22"),
+        roborock.replace("979bb22f", "979bb22f0"),
+        "https://files.roborock.com/iot/plugin/blocked.zip",
+        "https://files.roborock.com/other/979bb22f91a24f10a8bafe232b4fb5ee.zip",
+        roborock.replace("/plugin/", "/plu\tgin/"),
+    )
+    for source in blocked_sources:
+        assert not plugin_common.is_canonical_plugin_source(source), source
+        encoded = urllib.parse.quote(source, safe="")
+        response = client.get(f"/plugin/proxy/blocked.zip?src={encoded}")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["data"]["route"] == "/plugin/proxy/blocked.zip", source
+
+
+def test_plugin_cache_evicts_least_recently_used_files(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_CACHE_MAX_BYTES", 25)
+    cache_dir = tmp_path / "plugin_proxy_cache"
+    cache_dir.mkdir()
+    oldest = cache_dir / "oldest.zip"
+    older = cache_dir / "older.zip"
+    oldest.write_bytes(b"a" * 10)
+    older.write_bytes(b"b" * 10)
+    os.utime(oldest, (1_000, 1_000))
+    os.utime(older, (2_000, 2_000))
+
+    hit_source = "https://files.roborock.com/iot/plugin/979bb22f91a24f10a8bafe232b4fb5ee.zip"
+    hit_path = plugin_common.plugin_cache_path(tmp_path, hit_source)
+    hit_path.write_bytes(b"c" * 5)
+    os.utime(hit_path, (500, 500))
+
+    async def fake_download(source_url: str) -> tuple[bytes, str]:
+        return b"d" * 10, "application/zip"
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", fake_download)
+
+    # A cache hit marks the oldest-looking entry as recently used.
+    hit = asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=hit_source))
+    assert hit.headers["X-RR-Plugin-Cache"] == "hit"
+
+    new_source = "https://app-files.roborock.com/iot/plugin/ddb433cf4f2b43c9b553aea3ace73f4e.zip"
+    miss = asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=new_source))
+    assert miss.headers["X-RR-Plugin-Cache"] == "miss"
+
+    new_path = plugin_common.plugin_cache_path(tmp_path, new_source)
+    remaining = {path.name for path in cache_dir.glob("*.zip")}
+    assert remaining == {older.name, hit_path.name, new_path.name}
+    assert sum(path.stat().st_size for path in cache_dir.glob("*.zip")) <= 25

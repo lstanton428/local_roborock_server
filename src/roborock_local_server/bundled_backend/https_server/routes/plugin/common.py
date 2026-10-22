@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import quote, urljoin, urlparse
@@ -21,6 +23,11 @@ PLUGIN_PROXY_ALLOWED_HOSTS = {
 }
 
 PLUGIN_PROXY_MAX_BYTES = 32 * 1024 * 1024
+PLUGIN_PROXY_CACHE_MAX_BYTES = 512 * 1024 * 1024
+PLUGIN_PROXY_READ_CHUNK_BYTES = 64 * 1024
+# Plugin zips are published as <32 hex>.zip under /iot/plugin/ (Roborock hosts)
+# or /resources/iot/plugin/ (Xiaomi FDS CDN).
+PLUGIN_SOURCE_PATH_RE = re.compile(r"(?:/resources)?/iot/plugin/[0-9a-f]{32}\.zip")
 PLUGIN_PROXY_MAX_REDIRECTS = 5
 PLUGIN_PROXY_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
@@ -198,9 +205,31 @@ def is_allowed_plugin_source(source_url: str) -> bool:
     host = (parsed.hostname or "").strip().lower()
     if not host:
         return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port not in (None, 443):
+        return False
     if host in PLUGIN_PROXY_ALLOWED_HOSTS:
         return True
     return host.endswith(".fds.api.mi-img.com")
+
+
+def is_canonical_plugin_source(source_url: str) -> bool:
+    """Accept only the exact plugin zip URL shapes the cloud publishes.
+
+    The proxy route is unauthenticated and caches by source URL, so any accepted
+    variation (query string, port, userinfo, alternate path) would be a fresh
+    download and cache entry.
+    """
+    if not is_allowed_plugin_source(source_url):
+        return False
+    parsed = urlparse(source_url)
+    # Rebuilding from host + path drops any port, userinfo, params, query or fragment.
+    if source_url != f"https://{parsed.hostname}{parsed.path}":
+        return False
+    return PLUGIN_SOURCE_PATH_RE.fullmatch(parsed.path) is not None
 
 
 def plugin_cache_path(runtime_dir: Path, source_url: str) -> Path:
@@ -228,16 +257,46 @@ async def download_plugin_zip(source_url: str) -> tuple[bytes, str]:
                     continue
                 if status != 200:
                     raise RuntimeError(f"upstream returned HTTP {status}")
-                data = await response.read()
+                content_length = str(response.headers.get("Content-Length") or "").strip()
+                if content_length.isdigit() and int(content_length) > PLUGIN_PROXY_MAX_BYTES:
+                    raise RuntimeError(
+                        f"plugin too large: {content_length} bytes exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit"
+                    )
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in response.content.iter_chunked(PLUGIN_PROXY_READ_CHUNK_BYTES):
+                    size += len(chunk)
+                    if size > PLUGIN_PROXY_MAX_BYTES:
+                        raise RuntimeError(f"plugin too large: exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
                 if not data:
                     raise RuntimeError("upstream returned empty content")
-                if len(data) > PLUGIN_PROXY_MAX_BYTES:
-                    raise RuntimeError(
-                        f"plugin too large: {len(data)} bytes exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit"
-                    )
                 content_type = str(response.headers.get("Content-Type") or "application/zip").strip()
                 return data, content_type
     raise RuntimeError(f"upstream redirected more than {PLUGIN_PROXY_MAX_REDIRECTS} times")
+
+
+def evict_plugin_cache(cache_dir: Path, *, keep: Path, max_bytes: int) -> None:
+    """Delete least-recently-used cached zips until the cache fits in max_bytes."""
+    entries: list[tuple[float, int, Path]] = []
+    for path in cache_dir.glob("*.zip"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append((stat.st_mtime, stat.st_size, path))
+    total = sum(size for _mtime, size, _path in entries)
+    for _mtime, size, path in sorted(entries, key=lambda entry: entry[0]):
+        if total <= max_bytes:
+            break
+        if path == keep:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
 
 
 async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Response:
@@ -245,6 +304,8 @@ async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Respon
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         payload = cache_path.read_bytes()
+        # Refresh mtime so eviction treats it as recently used.
+        os.utime(cache_path)
         return Response(
             content=payload,
             media_type="application/zip",
@@ -255,6 +316,7 @@ async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Respon
     temp_path = cache_path.with_suffix(".tmp")
     temp_path.write_bytes(payload)
     temp_path.replace(cache_path)
+    evict_plugin_cache(cache_path.parent, keep=cache_path, max_bytes=PLUGIN_PROXY_CACHE_MAX_BYTES)
     media_type = upstream_content_type if "zip" in upstream_content_type.lower() else "application/zip"
     return Response(
         content=payload,

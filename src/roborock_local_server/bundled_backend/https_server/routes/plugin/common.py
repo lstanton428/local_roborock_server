@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
@@ -29,6 +30,9 @@ PLUGIN_PROXY_READ_CHUNK_BYTES = 64 * 1024
 # or /resources/iot/plugin/ (Xiaomi FDS CDN).
 PLUGIN_SOURCE_PATH_RE = re.compile(r"(?:/resources)?/iot/plugin/[0-9a-f]{32}\.zip")
 PLUGIN_PROXY_MAX_REDIRECTS = 5
+# Each download buffers up to PLUGIN_PROXY_MAX_BYTES, so cap how many run at once.
+PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS = 4
+PLUGIN_PROXY_DOWNLOAD_SLOT_WAIT_SECONDS = 30.0
 PLUGIN_PROXY_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 LEGACY_CATEGORY_PLUGIN_SOURCES = {
@@ -301,6 +305,65 @@ def evict_plugin_cache(cache_dir: Path, *, keep: Path, max_bytes: int) -> None:
         total -= size
 
 
+class _PluginDownloads:
+    """Bound the plugin downloads the unauthenticated proxy route can start.
+
+    Requests for a URL that is already downloading share that download, and at
+    most PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS different URLs download at once.
+    asyncio primitives belong to one event loop, so the state is rebuilt when
+    the running loop changes.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._slots: asyncio.Semaphore | None = None
+        self._in_flight: dict[str, asyncio.Future[tuple[bytes, str]]] = {}
+
+    async def fetch(self, source_url: str, cache_path: Path) -> tuple[bytes, str]:
+        loop = asyncio.get_running_loop()
+        if loop is not self._loop or self._slots is None:
+            self._loop = loop
+            self._slots = asyncio.Semaphore(PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS)
+            self._in_flight = {}
+        task = self._in_flight.get(source_url)
+        if task is None:
+            task = asyncio.ensure_future(self._download_to_cache(self._slots, source_url, cache_path))
+            self._in_flight[source_url] = task
+            task.add_done_callback(lambda done: self._finished(source_url, done))
+        # Shielded so a client that disconnects does not cancel the download for
+        # the other requests waiting on it.
+        return await asyncio.shield(task)
+
+    def _finished(self, source_url: str, done: asyncio.Future[tuple[bytes, str]]) -> None:
+        if self._in_flight.get(source_url) is done:
+            del self._in_flight[source_url]
+        if not done.cancelled():
+            done.exception()  # Mark retrieved even if every waiter went away.
+
+    @staticmethod
+    async def _download_to_cache(
+        slots: asyncio.Semaphore,
+        source_url: str,
+        cache_path: Path,
+    ) -> tuple[bytes, str]:
+        try:
+            await asyncio.wait_for(slots.acquire(), timeout=PLUGIN_PROXY_DOWNLOAD_SLOT_WAIT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("too many plugin downloads in progress") from exc
+        try:
+            payload, content_type = await download_plugin_zip(source_url)
+        finally:
+            slots.release()
+        temp_path = cache_path.with_suffix(".tmp")
+        temp_path.write_bytes(payload)
+        temp_path.replace(cache_path)
+        evict_plugin_cache(cache_path.parent, keep=cache_path, max_bytes=PLUGIN_PROXY_CACHE_MAX_BYTES)
+        return payload, content_type
+
+
+_plugin_downloads = _PluginDownloads()
+
+
 async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Response:
     cache_path = plugin_cache_path(runtime_dir, source_url)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -314,11 +377,7 @@ async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Respon
             headers={"Cache-Control": "public, max-age=86400", "X-RR-Plugin-Cache": "hit"},
         )
 
-    payload, upstream_content_type = await download_plugin_zip(source_url)
-    temp_path = cache_path.with_suffix(".tmp")
-    temp_path.write_bytes(payload)
-    temp_path.replace(cache_path)
-    evict_plugin_cache(cache_path.parent, keep=cache_path, max_bytes=PLUGIN_PROXY_CACHE_MAX_BYTES)
+    payload, upstream_content_type = await _plugin_downloads.fetch(source_url, cache_path)
     media_type = upstream_content_type if "zip" in upstream_content_type.lower() else "application/zip"
     return Response(
         content=payload,

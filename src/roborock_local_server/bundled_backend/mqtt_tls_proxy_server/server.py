@@ -267,6 +267,10 @@ class MqttTlsProxy:
             if authorized:
                 return True, auth_reason, info, None
             if auth_reason == "device_mqtt_password_missing":
+                # The first password presented for this username is stored and
+                # trusted from then on, so treat it like a first-time connection.
+                if not self._new_connections_enabled():
+                    return False, "new_connections_disabled", info, None
                 recovered_device = self.runtime_credentials.recover_device_mqtt_password(
                     username=username,
                     password=password,

@@ -171,7 +171,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             pendingContainer.textContent = "No devices are waiting for MQTT password recovery.";
           }} else {{
             pendingContainer.textContent =
-              "Devices waiting for first reconnect MQTT password recovery: " +
+              "Devices waiting for first reconnect MQTT password recovery (allow new connections until they reconnect): " +
               pendingItems.map((item) => item.name || item.duid || item.did || item.device_mqtt_usr).join(", ");
           }}
 

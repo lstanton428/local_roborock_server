@@ -557,3 +557,23 @@ def test_load_config_rejects_invalid_trusted_proxy(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="network.trusted_proxies entry 'traefik'"):
         load_config(config_file)
+
+
+def _with_tls_lines(path: Path, lines: str) -> Path:
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace('[tls]\nmode = "provided"\n', f'[tls]\nmode = "provided"\n{lines}\n'), encoding="utf-8")
+    return path
+
+
+def test_tls_wildcard_is_unset_unless_configured(tmp_path: Path) -> None:
+    path = write_release_config(tmp_path)
+    assert load_config(path).tls.wildcard is None
+    _with_tls_lines(path, "wildcard = false")
+    assert load_config(path).tls.wildcard is False
+
+
+@pytest.mark.parametrize("name", ["*.example.com", "*.cam.example.com"])
+def test_tls_extra_names_rejects_wildcards(tmp_path: Path, name: str) -> None:
+    path = _with_tls_lines(write_release_config(tmp_path), f'extra_names = ["cam.example.com", "{name}"]')
+    with pytest.raises(ValueError, match="tls.extra_names cannot contain wildcard names"):
+        load_config(path)

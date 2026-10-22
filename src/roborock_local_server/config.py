@@ -74,7 +74,9 @@ class TlsConfig:
     acme_eab_hmac_key_file: str
     cert_file: str
     key_file: str
-    wildcard: bool = False
+    # None means auto: keep an installed base_domain plus *.base_domain
+    # certificate's shape, otherwise issue exact names.
+    wildcard: bool | None = None
     extra_names: tuple[str, ...] = ()
 
 
@@ -242,6 +244,12 @@ def _as_hostname_tuple(value: object, field_name: str) -> tuple[str, ...]:
         return ()
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list of hostnames")
+    for item in value:
+        if "*" in str(item):
+            raise ValueError(
+                f"{field_name} cannot contain wildcard names such as {str(item).strip()!r}; "
+                "list each hostname, or set tls.wildcard = true for base_domain plus its wildcard"
+            )
     return tuple(_normalize_hostname(item, field_name) for item in value)
 
 
@@ -356,7 +364,7 @@ def load_config(path: str | Path) -> AppConfig:
             acme_eab_hmac_key_file=str(tls.get("acme_eab_hmac_key_file", "")).strip(),
             cert_file=str(tls.get("cert_file", "")).strip(),
             key_file=str(tls.get("key_file", "")).strip(),
-            wildcard=_as_bool(tls.get("wildcard"), False),
+            wildcard=None if tls.get("wildcard") is None else _as_bool(tls.get("wildcard"), False),
             extra_names=_as_hostname_tuple(tls.get("extra_names"), "tls.extra_names"),
         ),
         admin=AdminConfig(

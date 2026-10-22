@@ -15,7 +15,7 @@ import secrets
 import signal
 import socket
 import threading
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
@@ -162,6 +162,39 @@ def _request_value(
         if candidate:
             return candidate
     return ""
+
+
+def _is_admin_path(path: str) -> bool:
+    return path == "/admin" or path.startswith(("/admin/", "/ui/api/"))
+
+
+class AdminNetworkGuard:
+    """ASGI middleware that limits the admin dashboard to allowed client networks.
+
+    It checks scope["path"], the path the router matches. request.url is rebuilt
+    from the Host header, so a Host containing "#", "?" or "/" changes its path
+    without changing where the request is routed.
+    """
+
+    def __init__(self, app: Any, *, is_allowed: Callable[[str], bool]) -> None:
+        self.app = app
+        self._is_allowed = is_allowed
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            path = str(scope.get("path") or "")
+            root_path = str(scope.get("root_path") or "")
+            route_path = path[len(root_path):] if root_path and path.startswith(root_path) else path
+            if _is_admin_path(path) or _is_admin_path(route_path):
+                client = scope.get("client")
+                if not self._is_allowed(str(client[0]) if client else ""):
+                    response = JSONResponse(
+                        {"error": "The admin dashboard is not available from this network."},
+                        status_code=403,
+                    )
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
 
 
 def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
@@ -1854,10 +1887,6 @@ class ReleaseSupervisor:
                 return JSONResponse({"error": "Not Found"}, status_code=404)
             return await self._handle_roborock_request(request)
 
-    @staticmethod
-    def _is_admin_path(path: str) -> bool:
-        return path == "/admin" or path.startswith(("/admin/", "/ui/api/"))
-
     def _admin_client_allowed(self, client_host: str) -> bool:
         try:
             address = ipaddress.ip_address(client_host)
@@ -1870,21 +1899,11 @@ class ReleaseSupervisor:
             for network in self.config.admin.allowed_networks
         )
 
-    async def _admin_network_guard(self, request: Request, call_next: Any) -> Response:
-        if self._is_admin_path(request.url.path):
-            client_host = request.client.host if request.client else ""
-            if not self._admin_client_allowed(client_host):
-                return JSONResponse(
-                    {"error": "The admin dashboard is not available from this network."},
-                    status_code=403,
-                )
-        return await call_next(request)
-
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Roborock Local Server", docs_url=None, redoc_url=None, openapi_url=None)
         # Added before ProxyHeadersMiddleware so it runs inside it and sees the
         # forwarded client address from trusted proxies.
-        app.middleware("http")(self._admin_network_guard)
+        app.add_middleware(AdminNetworkGuard, is_allowed=self._admin_client_allowed)
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=list(self.config.network.trusted_proxies))
         if self.enable_standalone_admin:
             register_standalone_admin_routes(

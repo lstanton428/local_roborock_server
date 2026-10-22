@@ -228,6 +228,12 @@ def _admin_password_hash(config_path: Path, admin_password: str) -> str:
     return hash_password(admin_password)
 
 
+def _load_existing_new_connections_enabled(config_path: Path) -> bool:
+    """Keep an admin's dashboard choice across restarts; new installs default to on."""
+    value = _load_existing_admin_section(config_path).get("new_connections_enabled")
+    return value if isinstance(value, bool) else True
+
+
 def _render_config_toml(
     *,
     options: dict[str, Any],
@@ -314,7 +320,7 @@ def _render_config_toml(
     # The Home Assistant add-on no longer exposes this toggle.
     # Keep protocol auth enabled even if a stale stored option is present.
     protocol_auth_enabled = True
-    new_connections_enabled = True
+    new_connections_enabled = _load_existing_new_connections_enabled(config_path)
     new_connections_window_minutes = _as_window_minutes(merged.get("new_connections_window_minutes", 30))
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
     admin_allowed_networks = _as_network_list(merged.get("admin_allowed_networks") or [])

@@ -4,6 +4,8 @@ Before you start, finish [Installation](installation.md) and make sure the serve
 
 Make sure you have already completed the cloud import/fetch-data step from Installation before starting onboarding. If you skip that step, the onboarding tools will not know which vacuum to target and you can end up with `No known vacuums are available for onboarding.`
 
+Onboarding needs new connections to be allowed. Starting an onboarding session from the CLI, the GUI or the admin dashboard reopens the new-connections window, and the window stays open while the tool keeps polling that session, so onboarding that takes several cycles is not cut off. After the vacuum connects or the session is cleared, new connections close `admin.new_connections_window_minutes` (default 30) after the last poll. LocalRock does not start an onboarding session, so open **New Connections** in the admin dashboard first if the window has closed.
+
 If this is a brand new vacuum, it is still a good idea to set it up once in the official Roborock app first so the app can fetch the vacuum's current metadata. I would skip doing any firmware updates unless you know the latest firmware version is supported.
 
 ## Onboarding Methods

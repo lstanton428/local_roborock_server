@@ -722,6 +722,12 @@ class ReleaseSupervisor:
             time.monotonic() + window_minutes * 60 if window_minutes > 0 else None
         )
 
+    def _extend_new_connections_window(self) -> None:
+        """Push an open window's deadline out while an onboarding session is followed."""
+        if self._new_connections_deadline is None or not self.new_connections_enabled():
+            return
+        self._open_new_connections_window()
+
     def new_connections_seconds_remaining(self) -> int | None:
         """Seconds until new connections close, or None when they do not expire."""
         if not self.new_connections_enabled() or self._new_connections_deadline is None:
@@ -1833,6 +1839,10 @@ class ReleaseSupervisor:
         if normalized_session_id and snapshot.get("session_id") != normalized_session_id:
             raise KeyError(normalized_session_id)
         self._maybe_persist_onboarded_device(snapshot)
+        # Onboarding can take several cycles; keep the window open while the
+        # admin dashboard or onboarding tool is still following the session.
+        if snapshot.get("status") != "complete":
+            self._extend_new_connections_window()
         return snapshot
 
     def persist_active_onboarding_device(self) -> None:

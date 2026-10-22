@@ -9,6 +9,11 @@ import re
 import tomllib
 from urllib.parse import urlsplit
 
+# Per-connection MQTT topic permissions (broker.topic_acl). Shared with the TLS
+# proxy and the add-on so the accepted values are defined once.
+TOPIC_ACL_MODES = ("off", "audit", "enforce")
+DEFAULT_TOPIC_ACL_MODE = "audit"
+
 
 @dataclass(frozen=True)
 class NetworkConfig:
@@ -38,7 +43,7 @@ class BrokerConfig:
     enable_topic_bridge: bool
     # Per-connection MQTT topic permissions: "audit" logs what would be
     # blocked, "enforce" disconnects the client, "off" skips the check.
-    topic_acl: str = "audit"
+    topic_acl: str = DEFAULT_TOPIC_ACL_MODE
 
 
 @dataclass(frozen=True)
@@ -376,7 +381,7 @@ def load_config(path: str | Path) -> AppConfig:
             port=_as_port(broker.get("port"), "broker.port", broker_port_default),
             mosquitto_binary=str(broker.get("mosquitto_binary", "mosquitto")).strip() or "mosquitto",
             enable_topic_bridge=_as_bool(broker.get("enable_topic_bridge"), True),
-            topic_acl=_as_choice(broker.get("topic_acl"), "broker.topic_acl", ("off", "audit", "enforce"), "audit"),
+            topic_acl=_as_choice(broker.get("topic_acl"), "broker.topic_acl", TOPIC_ACL_MODES, DEFAULT_TOPIC_ACL_MODE),
         ),
         storage=StorageConfig(
             data_dir=str(storage.get("data_dir", "/data")).strip() or "/data",

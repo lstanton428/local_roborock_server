@@ -22,7 +22,7 @@ from shared.runtime_state import RuntimeState
 from shared.zone_ranges_store import ZoneRangesStore
 
 from .command_handlers import RpcCommandRegistry
-from .topic_acl import TOPIC_ACL_MODES, TopicAcl, extract_subscribe_filters
+from .topic_acl import DEFAULT_TOPIC_ACL_MODE, TOPIC_ACL_MODES, TopicAcl, extract_subscribe_filters
 
 class MqttTlsProxy:
     _MAX_FIRST_PACKET_BYTES = 1024 * 1024
@@ -48,7 +48,7 @@ class MqttTlsProxy:
         zone_ranges_store: ZoneRangesStore | None = None,
         tls_enabled: bool = True,
         on_onboarding_credentials_learned: Callable[[], None] | None = None,
-        topic_acl_mode: str = "off",
+        topic_acl_mode: str = DEFAULT_TOPIC_ACL_MODE,
     ) -> None:
         if topic_acl_mode not in TOPIC_ACL_MODES:
             raise ValueError(f"topic_acl_mode must be one of {', '.join(TOPIC_ACL_MODES)}")
@@ -759,7 +759,10 @@ class MqttTlsProxy:
             acl = self._conn_topic_acls.get(conn_id)
         if acl is None:
             return True
-        violation = self._topic_acl_violation(acl, conn_id, packet)
+        return self._allow_topic_acl_violation(conn_id, acl, self._topic_acl_violation(acl, conn_id, packet))
+
+    def _allow_topic_acl_violation(self, conn_id: str, acl: TopicAcl, violation: str | None) -> bool:
+        """Log an ACL violation; False means the connection must be refused or dropped."""
         if violation is None:
             return True
         enforce = self.topic_acl_mode == "enforce"
@@ -788,6 +791,24 @@ class MqttTlsProxy:
             if denied:
                 return f"SUBSCRIBE filters={','.join(denied)}"
         return None
+
+    def _send_connect_reject(
+        self,
+        conn_id: str,
+        tls_conn: socket.socket | ssl.SSLSocket,
+        connect_info: dict[str, Any] | None,
+    ) -> None:
+        reject_packet = self._build_connect_reject_packet(
+            connect_info.get("protocol_level") if isinstance(connect_info, dict) else None
+        )
+        if reject_packet is None:
+            return
+        try:
+            tls_conn.sendall(reject_packet)
+        except (OSError, ConnectionResetError, BrokenPipeError):
+            pass
+        else:
+            self._queue_trace_packet(conn_id, "b2c", reject_packet)
 
     def _relay(self, src: socket.socket, dst: socket.socket, conn_id: str, direction: str, frame_buf: bytearray) -> None:
         try:
@@ -851,28 +872,32 @@ class MqttTlsProxy:
                     str((connect_info or {}).get("client_id") or ""),
                     str((connect_info or {}).get("username") or ""),
                 )
-                reject_packet = self._build_connect_reject_packet(
-                    connect_info.get("protocol_level") if isinstance(connect_info, dict) else None
-                )
-                if reject_packet is not None:
-                    try:
-                        tls_conn.sendall(reject_packet)
-                    except (OSError, ConnectionResetError, BrokenPipeError):
-                        pass
-                    else:
-                        self._queue_trace_packet(conn_id, "b2c", reject_packet)
+                self._send_connect_reject(conn_id, tls_conn, connect_info)
                 return
+
+            topic_acl = self._topic_acl_for_connection(
+                auth_reason=auth_reason,
+                connect_info=connect_info,
+                onboarding_candidate=onboarding_candidate,
+            )
+            will_topic = (connect_info or {}).get("will_topic")
+            if self.topic_acl_mode != "off" and topic_acl is not None and will_topic is not None:
+                # The broker publishes the Will on the client's behalf, so it is
+                # checked like any other publish from this connection.
+                violation = (
+                    None
+                    if will_topic and topic_acl.allows_publish(will_topic)
+                    else f"WILL topic={will_topic or '<empty>'}"
+                )
+                if not self._allow_topic_acl_violation(conn_id, topic_acl, violation):
+                    self._send_connect_reject(conn_id, tls_conn, connect_info)
+                    return
 
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             backend.connect((self.backend_host, self.backend_port))
             self._register_conn_endpoints(conn_id, tls_conn, backend)
             if onboarding_candidate is not None:
                 self._set_pending_onboarding_auth(conn_id, onboarding_candidate)
-            topic_acl = self._topic_acl_for_connection(
-                auth_reason=auth_reason,
-                connect_info=connect_info,
-                onboarding_candidate=onboarding_candidate,
-            )
             if topic_acl is not None:
                 with self._lock:
                     self._conn_topic_acls[conn_id] = topic_acl

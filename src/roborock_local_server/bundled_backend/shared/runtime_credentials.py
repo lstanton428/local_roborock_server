@@ -153,13 +153,15 @@ def parse_mqtt_connect_packet(packet: bytes) -> dict[str, Any] | None:
     will_flag = (connect_flags & 0x04) != 0
     username_flag = (connect_flags & 0x80) != 0
     password_flag = (connect_flags & 0x40) != 0
+    will_topic: str | None = None
     if will_flag:
         if protocol_level == 5:
             property_len, property_len_bytes = _decode_remaining_length(packet, cursor)
             if property_len is None or property_len_bytes == 0:
                 return None
             cursor += property_len_bytes + property_len
-        _, cursor = _decode_mqtt_string(packet, cursor)
+        decoded_will_topic, cursor = _decode_mqtt_string(packet, cursor)
+        will_topic = decoded_will_topic or ""
         _, cursor = _decode_mqtt_binary(packet, cursor)
         if cursor > len(packet):
             return None
@@ -183,6 +185,8 @@ def parse_mqtt_connect_packet(packet: bytes) -> dict[str, Any] | None:
         "client_id": client_id,
         "username": username,
         "password": password,
+        # None when the CONNECT carries no Will message.
+        "will_topic": will_topic,
     }
 
 

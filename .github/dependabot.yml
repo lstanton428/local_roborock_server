@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Keeps the digest-pinned base images in the Dockerfile current.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

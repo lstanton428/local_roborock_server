@@ -8,6 +8,9 @@ LABEL org.opencontainers.image.source="https://github.com/python-roborock/local_
   org.opencontainers.image.description="Private Roborock HTTPS and MQTT stack for local LAN use" \
   org.opencontainers.image.licenses="MIT"
 
+# Dependabot does not track this download: bump ACME_SH_VERSION and
+# ACME_SH_SHA256 together by hand. Get the new checksum with
+#   curl -fsSL https://github.com/acmesh-official/acme.sh/archive/refs/tags/<version>.tar.gz | sha256sum
 ARG ACME_SH_VERSION=3.1.6
 ARG ACME_SH_SHA256=0d3f9000ac44a6331314742a88c475f79134e24fc991997883652adc59efc486
 
@@ -30,16 +33,20 @@ RUN curl -fsSL -o /tmp/acme.sh.tar.gz "https://github.com/acmesh-official/acme.s
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md /app/
+COPY pyproject.toml uv.lock build-requirements.txt README.md /app/
 COPY src /app/src
 
-# Install the exact dependency versions and hashes from uv.lock, then the
-# project itself without letting pip resolve anything else.
+# Install the exact dependency versions and hashes from uv.lock; --locked fails
+# the build if uv.lock is out of date with pyproject.toml. The build backend
+# (hatchling) comes from the hash-pinned build-requirements.txt into a
+# throwaway directory and is used via --no-build-isolation, so pip never
+# fetches an unpinned backend. It is removed afterwards and not shipped.
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
-  uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt \
+  uv export --locked --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt \
   && pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
-  && pip install --no-cache-dir --no-deps /app \
-  && rm /tmp/requirements.txt
+  && pip install --no-cache-dir --require-hashes --target /tmp/build-deps -r /app/build-requirements.txt \
+  && PYTHONPATH=/tmp/build-deps pip install --no-cache-dir --no-deps --no-build-isolation /app \
+  && rm -rf /tmp/requirements.txt /tmp/build-deps
 
 EXPOSE 555 8881 3478/udp
 

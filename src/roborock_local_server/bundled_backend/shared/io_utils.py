@@ -14,6 +14,18 @@ from roborock_local_server.log_retention import (
 )
 
 _FILE_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
+
+class _ContinuationLineFormatter(logging.Formatter):
+    """Indent every line after the first so logged values cannot start a new entry.
+
+    Log messages include client-supplied text (MQTT usernames, topics, paths), and
+    the startup MQTT password backfill reads these files back line by line.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record).replace("\r\n", "\n").replace("\r", "\n")
+        return text.replace("\n", "\n\t")
 _STREAM_LOG_FORMAT = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
 _JSONL_STREAM_LOGGER_NAME = "real_stack.jsonl"
 
@@ -61,7 +73,7 @@ def setup_file_logger(
         max_bytes=effective_max_bytes,
         backup_count=effective_backup_count,
     )
-    handler.setFormatter(logging.Formatter(_FILE_LOG_FORMAT))
+    handler.setFormatter(_ContinuationLineFormatter(_FILE_LOG_FORMAT))
     logger.addHandler(handler)
     logger.addHandler(_make_stream_handler())
     return logger

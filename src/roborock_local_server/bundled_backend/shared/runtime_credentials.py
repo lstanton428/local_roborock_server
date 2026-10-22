@@ -326,7 +326,7 @@ class RuntimeCredentialsStore:
                 return index
         return None
 
-    def _find_unique_model_index_locked(self, model: str) -> int | None:
+    def _find_unique_model_index_locked(self, model: str, did: str = "") -> int | None:
         normalized_model = _clean_str(model).lower()
         if not normalized_model:
             return None
@@ -335,9 +335,15 @@ class RuntimeCredentialsStore:
             for index, device in enumerate(self._devices)
             if _clean_str(device.get("model")).lower() == normalized_model
         ]
-        if len(matches) == 1:
-            return matches[0]
-        return None
+        if len(matches) != 1:
+            return None
+        # A model-only match may adopt a record that has no did yet, but must never
+        # hand an unknown did another device's record (and its localkey).
+        existing_did = _clean_str(self._devices[matches[0]].get("did"))
+        normalized_did = _clean_str(did)
+        if normalized_did and existing_did and existing_did != normalized_did:
+            return None
+        return matches[0]
 
     def _find_index_locked(self, *, did: str = "", duid: str = "", model: str = "") -> int | None:
         did_index = self._find_index_by_did_locked(did)
@@ -348,7 +354,7 @@ class RuntimeCredentialsStore:
             return duid_index
         if _clean_str(duid):
             return None
-        return self._find_unique_model_index_locked(model)
+        return self._find_unique_model_index_locked(model, did)
 
     def _merge_device_records_locked(self, primary_index: int, secondary_index: int) -> tuple[dict[str, str], bool]:
         if primary_index == secondary_index:
@@ -432,7 +438,7 @@ class RuntimeCredentialsStore:
                 if index is None:
                     index = duid_index
                 if index is None and not normalized_duid:
-                    index = self._find_unique_model_index_locked(normalized_model)
+                    index = self._find_unique_model_index_locked(normalized_model, normalized_did)
                 device = self._devices[index] if index is not None else None
 
             if device is None:

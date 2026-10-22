@@ -315,6 +315,45 @@ class RuntimeState:
                 vac["last_disconnect_at"] = now
             self._recent_events.append({"time": now, "type": "mqtt_disconnect", "conn_id": conn_id})
 
+    def record_mqtt_device_auth(self, *, conn_id: str, did: str = "", duid: str = "") -> None:
+        """Mark an MQTT connection as authenticated with a vacuum's own device credentials."""
+        with self._lock:
+            conn = self._mqtt_connections.get(conn_id)
+            if conn is None:
+                return
+            conn["device_did"] = did.strip()
+            conn["device_duid"] = duid.strip()
+
+    def is_vacuum_client_ip(self, ip: str) -> bool:
+        """Return whether ``ip`` belongs to a vacuum with a live device-authenticated MQTT session.
+
+        A robot keeps its MQTT session open while the app drives it, so the source address of
+        that session is the reliable signal. HTTP events are not used directly because any client
+        can tag a request with a known did. The exception is an MQTT session arriving from a
+        configured trusted proxy (a stream proxy hides the robot's address): then the addresses
+        recorded for that same device from HTTP requests are accepted.
+        """
+        normalized_ip = _extract_ip(ip)
+        if not normalized_ip:
+            return False
+        with self._lock:
+            for conn in self._mqtt_connections.values():
+                did = str(conn.get("device_did") or "").strip()
+                duid = str(conn.get("device_duid") or "").strip()
+                if not did and not duid:
+                    continue
+                client_ip = str(conn.get("client_ip") or "").strip()
+                if client_ip == normalized_ip:
+                    return True
+                if not _ip_in_networks(client_ip, self._trusted_proxy_networks):
+                    continue
+                if _ip_in_networks(normalized_ip, self._trusted_proxy_networks):
+                    continue
+                vac = self._find_vacuum_by_identity_locked(did=did, duid=duid)
+                if vac is not None and normalized_ip in vac.get("ips", set()):
+                    return True
+        return False
+
     def record_mqtt_message(
         self,
         *,

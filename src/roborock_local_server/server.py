@@ -55,6 +55,7 @@ from .backend import (
 from shared.inventory_io import atomic_write_inventory, inventory_transaction
 from shared.protocol_auth import ProtocolAuthStore
 from https_server.routes.user.scene import validity as scene_validity
+from https_server.routes.fw import createca as fw_createca
 from https_server.routes.auth.service import (
     build_login_data_response,
     cloud_login_data_required_response,
@@ -1358,6 +1359,15 @@ class ReleaseSupervisor:
             method=request.method,
         )
         entry["route"] = route_name
+        if (
+            route_name == "fw_createca"
+            and self.context.turn_enabled
+            and not self.runtime_state.is_vacuum_client_ip(client_host)
+        ):
+            # Relay credentials only go to a robot with a live device-authenticated MQTT session.
+            response_payload = fw_createca.without_credentials(response_payload)
+            entry["turn_credentials_withheld"] = True
+            logger.warning("Withheld TURN credentials from %s: not a connected vacuum address", client_host)
         if route_name == "fw_createca":
             # Persist metadata, but retain the exact credential response sent to firmware.
             entry["response_json"] = {

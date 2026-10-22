@@ -102,6 +102,8 @@ class TurnConfig:
     password: str = ""
     realm: str = ""
     ttl: int = 86400
+    # Extra peer ranges the provided coturn must not relay to (see turn_relay.py).
+    denied_peer_ips: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -367,6 +369,7 @@ def load_config(path: str | Path) -> AppConfig:
             password=str(turn.get("password", "")).strip(),
             realm=str(turn.get("realm", "") or turn.get("host", "")).strip(),
             ttl=_as_int(turn.get("ttl"), "turn.ttl", 86400),
+            denied_peer_ips=_as_trusted_proxies(turn.get("denied_peer_ips"), "turn.denied_peer_ips", ()),
         ),
     )
 

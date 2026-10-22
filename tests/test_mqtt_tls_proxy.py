@@ -1103,3 +1103,61 @@ def test_onboarding_candidate_from_trusted_proxy_still_requires_region_and_nc(tm
     assert authorized is False
     assert reason == "invalid_mqtt_credentials"
     assert candidate is None
+
+
+def test_handle_client_marks_device_authenticated_connection_as_vacuum(tmp_path, monkeypatch) -> None:
+    cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
+    _seed_cloud_snapshot(cloud_snapshot_path)
+    runtime_credentials_path = tmp_path / "runtime_credentials.json"
+    _write_json(
+        runtime_credentials_path,
+        {
+            "schema_version": 2,
+            "mqtt_usr": "bootstrap-user",
+            "mqtt_passwd": "bootstrap-pass",
+            "mqtt_clientid": "bootstrap-client",
+            "devices": [
+                {
+                    "did": "1103821560705",
+                    "duid": "6HL2zfniaoYYV01CkVuhkO",
+                    "name": "Roborock Qrevo MaxV 2",
+                    "model": "roborock.vacuum.a87",
+                    "localkey": "xPd5Dr8CGGqtdDlH",
+                    "device_mqtt_usr": "c25b14ceac358d2a",
+                    "device_mqtt_pass": "ff8922d24a9a9af81f18f35dcee9a5a5",
+                }
+            ],
+        },
+    )
+    runtime_state = RuntimeState(log_dir=tmp_path, key_state_file=None)
+    proxy = MqttTlsProxy(
+        cert_file=tmp_path / "fullchain.pem",
+        key_file=tmp_path / "privkey.pem",
+        listen_host="127.0.0.1",
+        listen_port=8883,
+        backend_host="127.0.0.1",
+        backend_port=1883,
+        localkey="test-local-key",
+        logger=logging.getLogger("test.mqtt_tls_proxy"),
+        decoded_jsonl=tmp_path / "decoded.jsonl",
+        cloud_snapshot_path=cloud_snapshot_path,
+        runtime_credentials=RuntimeCredentialsStore(runtime_credentials_path),
+        runtime_state=runtime_state,
+    )
+    # Keep the connection record after the fake sockets close so it can be inspected.
+    monkeypatch.setattr(runtime_state, "record_mqtt_disconnect", lambda **_kwargs: None)
+    monkeypatch.setattr(socket, "socket", lambda *args, **kwargs: _FakeBackendSocket())
+    monkeypatch.setattr(proxy, "_queue_trace_packet", lambda *args: None)
+    proxy._running = True
+
+    user_packet = _build_connect_packet(client_id="ha-client", username="bootstrap-user", password="bootstrap-pass")
+    proxy._handle_client(_FakeSourceSocket(user_packet), ("192.168.8.20", 4321))
+    device_packet = _build_connect_packet(
+        client_id="a012391cb5f8bc97",
+        username="c25b14ceac358d2a",
+        password="ff8922d24a9a9af81f18f35dcee9a5a5",
+    )
+    proxy._handle_client(_FakeSourceSocket(device_packet), ("192.168.8.10", 4322))
+
+    assert runtime_state.is_vacuum_client_ip("192.168.8.10")
+    assert not runtime_state.is_vacuum_client_ip("192.168.8.20")

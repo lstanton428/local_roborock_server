@@ -20,6 +20,9 @@ def test_camera_bootstrap_preserves_firmware_contract_and_redacts_persisted_pass
         username="viewer", password="camera-test-secret", realm="turn.example.com"))
     paths = resolve_paths(config_file, config)
     supervisor = ReleaseSupervisor(config=config, paths=paths)
+    # TestClient requests come from "testclient"; register it as a connected vacuum.
+    supervisor.runtime_state.record_mqtt_connection(conn_id="robot", client_ip="testclient", client_port=1883)
+    supervisor.runtime_state.record_mqtt_device_auth(conn_id="robot", did="1103821560705")
     client = TestClient(supervisor.app)
     response = client.post("/iot.roborock.com/fwapi/createca", json={})
     assert response.status_code == 200
@@ -33,6 +36,25 @@ def test_camera_bootstrap_preserves_firmware_contract_and_redacts_persisted_pass
     assert entry["response_json"]["data"]["credential"] == "<redacted>"
     assert entry["response_json"]["result"]["pwd"] == "<redacted>"
     assert entry["response_json"]["result"]["credential"] == "<redacted>"
+
+
+def test_camera_bootstrap_withholds_turn_credentials_from_non_vacuum_clients(tmp_path):
+    config_file = write_release_config(tmp_path)
+    config = replace(load_config(config_file), turn=TurnConfig(mode="external", host="turn.example.com",
+        username="viewer", password="camera-test-secret", realm="turn.example.com"))
+    paths = resolve_paths(config_file, config)
+    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    # An MQTT session from the same address without device credentials (e.g. an app user).
+    supervisor.runtime_state.record_mqtt_connection(conn_id="app", client_ip="testclient", client_port=1883)
+    client = TestClient(supervisor.app)
+    response = client.post("/iot.roborock.com/fwapi/createca", json={"did": "1103821560705"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert "camera-test-secret" not in response.text
+    for part in (payload["data"], payload["result"]):
+        assert not {"user", "pwd", "username", "credential"} & set(part)
+        # The advertised endpoint stays visible for the onboarding preflight route check.
+        assert part["url"] == "turn:turn.example.com:3478"
 
 
 def _scene_zone_step(

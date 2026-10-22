@@ -9,6 +9,7 @@ import yaml
 
 from roborock_local_server.config import load_config
 from roborock_local_server.ha_addon import write_config_from_home_assistant_options
+from roborock_local_server.security import verify_password
 
 
 def _write_options(path: Path, payload: dict[str, object]) -> None:
@@ -211,6 +212,35 @@ def test_write_config_from_home_assistant_options_reuses_existing_session_secret
 
     assert len(str(first_secret)) >= 24
     assert second_secret == first_secret
+
+
+def test_write_config_from_home_assistant_options_keeps_password_hash_until_password_changes(
+    tmp_path: Path,
+) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    options = {
+        "stack_fqdn": "api-roborock.example.com",
+        "cert_file": "/ssl/fullchain.pem",
+        "key_file": "/ssl/privkey.pem",
+        "admin_password": "secret",
+        "protocol_login_email": "user@example.com",
+        "protocol_login_pin": "654321",
+    }
+
+    def write_and_read_hash() -> str:
+        write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+        return str(tomllib.loads(config_path.read_text(encoding="utf-8"))["admin"]["password_hash"])
+
+    _write_options(options_path, options)
+    first_hash = write_and_read_hash()
+    # Admin session cookies are keyed to this hash, so a restart must not change it.
+    assert write_and_read_hash() == first_hash
+
+    _write_options(options_path, {**options, "admin_password": "a-new-secret"})
+    changed_hash = write_and_read_hash()
+    assert changed_hash != first_hash
+    assert verify_password("a-new-secret", changed_hash)
 
 
 def test_write_config_from_home_assistant_options_ignores_legacy_broker_flags(tmp_path: Path) -> None:

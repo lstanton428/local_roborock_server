@@ -12,6 +12,14 @@ from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.server import ReleaseSupervisor, resolve_route
 
 
+@pytest.fixture(autouse=True)
+def _fresh_plugin_downloads(monkeypatch) -> None:
+    # Remembered upstream failures are process-wide; start each test clean.
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "_plugin_downloads", plugin_common._PluginDownloads())
+
+
 def _build_supervisor(tmp_path: Path) -> ReleaseSupervisor:
     config_file = write_release_config(tmp_path)
     config = load_config(config_file)
@@ -136,9 +144,10 @@ def test_plugin_category_zip_uses_expected_source_and_cache(tmp_path: Path, monk
     client = TestClient(supervisor.app)
     downloaded_sources: list[str] = []
 
-    async def fake_download(source_url: str) -> tuple[bytes, str]:
+    async def fake_download(source_url: str, dest_path: Path) -> str:
         downloaded_sources.append(source_url)
-        return b"fake-zip-bytes", "application/zip"
+        dest_path.write_bytes(b"fake-zip-bytes")
+        return "application/zip"
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", fake_download)
 
@@ -162,7 +171,7 @@ def test_plugin_proxy_rejects_non_https_and_unknown_hosts(tmp_path: Path, monkey
     supervisor = _build_supervisor(tmp_path)
     client = TestClient(supervisor.app)
 
-    async def fail_download(source_url: str) -> tuple[bytes, str]:
+    async def fail_download(source_url: str, dest_path: Path) -> str:
         raise AssertionError(f"download should not be called for {source_url}")
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", fail_download)
@@ -254,7 +263,7 @@ def _patch_plugin_session(monkeypatch, responses: dict[str, _FakePluginResponse]
     return requested
 
 
-def test_plugin_download_follows_redirects_between_allowed_hosts(monkeypatch) -> None:
+def test_plugin_download_follows_redirects_between_allowed_hosts(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     requested = _patch_plugin_session(
@@ -272,14 +281,16 @@ def test_plugin_download_follows_redirects_between_allowed_hosts(monkeypatch) ->
         },
     )
 
-    data, content_type = asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+    content_type = asyncio.run(
+        plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip", tmp_path / "plugin.tmp")
+    )
 
-    assert data == b"zip-bytes"
+    assert (tmp_path / "plugin.tmp").read_bytes() == b"zip-bytes"
     assert content_type == "application/zip"
     assert requested[-1] == "https://app-files.roborock.com/iot/plugin/b.zip"
 
 
-def test_plugin_download_refuses_redirect_to_disallowed_host(monkeypatch) -> None:
+def test_plugin_download_refuses_redirect_to_disallowed_host(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     requested = _patch_plugin_session(
@@ -292,22 +303,22 @@ def test_plugin_download_refuses_redirect_to_disallowed_host(monkeypatch) -> Non
     )
 
     with pytest.raises(RuntimeError, match="disallowed host"):
-        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip", tmp_path / "plugin.tmp"))
     assert requested == ["https://files.roborock.com/iot/plugin/a.zip"]
 
 
-def test_plugin_download_limits_redirect_chains(monkeypatch) -> None:
+def test_plugin_download_limits_redirect_chains(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     loop_url = "https://files.roborock.com/iot/plugin/loop.zip"
     requested = _patch_plugin_session(monkeypatch, {loop_url: _FakePluginResponse(302, {"Location": loop_url})})
 
     with pytest.raises(RuntimeError, match="redirected more than"):
-        asyncio.run(plugin_common.download_plugin_zip(loop_url))
+        asyncio.run(plugin_common.download_plugin_zip(loop_url, tmp_path / "plugin.tmp"))
     assert len(requested) == plugin_common.PLUGIN_PROXY_MAX_REDIRECTS + 1
 
 
-def test_plugin_download_checks_every_redirect_hop(monkeypatch) -> None:
+def test_plugin_download_checks_every_redirect_hop(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     disallowed = "https://evil.example.com/iot/plugin/c.zip"
@@ -323,14 +334,14 @@ def test_plugin_download_checks_every_redirect_hop(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError, match="disallowed host"):
-        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip", tmp_path / "plugin.tmp"))
     assert requested == [
         "https://files.roborock.com/iot/plugin/a.zip",
         "https://app-files.roborock.com/iot/plugin/b.zip",
     ]
 
 
-def test_plugin_download_refuses_redirect_to_explicit_port(monkeypatch) -> None:
+def test_plugin_download_refuses_redirect_to_explicit_port(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     requested = _patch_plugin_session(
@@ -343,7 +354,7 @@ def test_plugin_download_refuses_redirect_to_explicit_port(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError, match="disallowed host"):
-        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip", tmp_path / "plugin.tmp"))
     assert requested == ["https://files.roborock.com/iot/plugin/a.zip"]
 
 
@@ -357,7 +368,7 @@ def test_allowed_plugin_source_requires_default_https_port() -> None:
     assert not plugin_common.is_allowed_plugin_source("https://files.roborock.com:notaport/iot/plugin/a.zip")
 
 
-def test_plugin_download_rejects_oversized_content_length_without_reading(monkeypatch) -> None:
+def test_plugin_download_rejects_oversized_content_length_without_reading(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     source = "https://files.roborock.com/iot/plugin/a.zip"
@@ -369,11 +380,11 @@ def test_plugin_download_rejects_oversized_content_length_without_reading(monkey
     _patch_plugin_session(monkeypatch, {source: response})
 
     with pytest.raises(RuntimeError, match="too large"):
-        asyncio.run(plugin_common.download_plugin_zip(source))
+        asyncio.run(plugin_common.download_plugin_zip(source, tmp_path / "plugin.tmp"))
     assert response.content.chunks_read == 0
 
 
-def test_plugin_download_stops_reading_streamed_oversize_body(monkeypatch) -> None:
+def test_plugin_download_stops_reading_streamed_oversize_body(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_BYTES", 10)
@@ -382,11 +393,11 @@ def test_plugin_download_stops_reading_streamed_oversize_body(monkeypatch) -> No
     _patch_plugin_session(monkeypatch, {source: response})
 
     with pytest.raises(RuntimeError, match="too large"):
-        asyncio.run(plugin_common.download_plugin_zip(source))
+        asyncio.run(plugin_common.download_plugin_zip(source, tmp_path / "plugin.tmp"))
     assert response.content.chunks_read == 2
 
 
-def test_plugin_download_accepts_body_at_size_limit(monkeypatch) -> None:
+def test_plugin_download_accepts_body_at_size_limit(tmp_path: Path, monkeypatch) -> None:
     from https_server.routes.plugin import common as plugin_common
 
     monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_BYTES", 12)
@@ -396,8 +407,8 @@ def test_plugin_download_accepts_body_at_size_limit(monkeypatch) -> None:
         {source: _FakePluginResponse(200, {"Content-Length": "12"}, chunks=[b"123456", b"789012"])},
     )
 
-    data, _content_type = asyncio.run(plugin_common.download_plugin_zip(source))
-    assert data == b"123456789012"
+    asyncio.run(plugin_common.download_plugin_zip(source, tmp_path / "plugin.tmp"))
+    assert (tmp_path / "plugin.tmp").read_bytes() == b"123456789012"
 
 
 def _known_plugin_sources() -> list[str]:
@@ -420,9 +431,10 @@ def test_plugin_proxy_accepts_every_known_plugin_source(tmp_path: Path, monkeypa
     client = TestClient(supervisor.app)
     downloaded_sources: list[str] = []
 
-    async def fake_download(source_url: str) -> tuple[bytes, str]:
+    async def fake_download(source_url: str, dest_path: Path) -> str:
         downloaded_sources.append(source_url)
-        return b"fake-zip-bytes", "application/zip"
+        dest_path.write_bytes(b"fake-zip-bytes")
+        return "application/zip"
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", fake_download)
 
@@ -443,7 +455,7 @@ def test_plugin_proxy_rejects_non_canonical_sources(tmp_path: Path, monkeypatch)
     supervisor = _build_supervisor(tmp_path)
     client = TestClient(supervisor.app)
 
-    async def fail_download(source_url: str) -> tuple[bytes, str]:
+    async def fail_download(source_url: str, dest_path: Path) -> str:
         raise AssertionError(f"download should not be called for {source_url}")
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", fail_download)
@@ -503,8 +515,9 @@ def test_plugin_cache_evicts_least_recently_used_files(tmp_path: Path, monkeypat
     hit_path.write_bytes(b"c" * 5)
     os.utime(hit_path, (500, 500))
 
-    async def fake_download(source_url: str) -> tuple[bytes, str]:
-        return b"d" * 10, "application/zip"
+    async def fake_download(source_url: str, dest_path: Path) -> str:
+        dest_path.write_bytes(b"d" * 10)
+        return "application/zip"
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", fake_download)
 
@@ -545,10 +558,11 @@ def test_plugin_proxy_shares_one_download_between_concurrent_requests(tmp_path: 
 
     calls: list[str] = []
 
-    async def slow_download(source_url: str) -> tuple[bytes, str]:
+    async def slow_download(source_url: str, dest_path: Path) -> str:
         calls.append(source_url)
         await asyncio.sleep(0.05)
-        return b"zip-bytes", "application/zip"
+        dest_path.write_bytes(b"zip-bytes")
+        return "application/zip"
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", slow_download)
 
@@ -556,7 +570,7 @@ def test_plugin_proxy_shares_one_download_between_concurrent_requests(tmp_path: 
         responses = await asyncio.gather(
             *(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A) for _ in range(5))
         )
-        return [response.body for response in responses]
+        return [Path(response.path).read_bytes() for response in responses]
 
     assert asyncio.run(run()) == [b"zip-bytes"] * 5
     assert calls == [_CANONICAL_A]
@@ -570,10 +584,11 @@ def test_plugin_proxy_limits_concurrent_downloads(tmp_path: Path, monkeypatch) -
     release = None
     calls: list[str] = []
 
-    async def blocking_download(source_url: str) -> tuple[bytes, str]:
+    async def blocking_download(source_url: str, dest_path: Path) -> str:
         calls.append(source_url)
         await release.wait()
-        return b"zip-bytes", "application/zip"
+        dest_path.write_bytes(b"zip-bytes")
+        return "application/zip"
 
     monkeypatch.setattr(plugin_common, "download_plugin_zip", blocking_download)
 
@@ -585,7 +600,119 @@ def test_plugin_proxy_limits_concurrent_downloads(tmp_path: Path, monkeypatch) -
         with pytest.raises(RuntimeError, match="too many plugin downloads"):
             await plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_B)
         release.set()
-        assert (await first).body == b"zip-bytes"
+        assert Path((await first).path).read_bytes() == b"zip-bytes"
 
     asyncio.run(run())
     assert calls == [_CANONICAL_A]
+
+
+def test_plugin_download_cap_fits_the_largest_built_in_plugin(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    # files.roborock.com/iot/plugin/ea53983b82e948638904d9154bb7f474.zip is about 55 MB.
+    assert plugin_common.PLUGIN_PROXY_MAX_BYTES == 128 * 1024 * 1024
+    source = "https://files.roborock.com/iot/plugin/a.zip"
+    _patch_plugin_session(
+        monkeypatch,
+        {source: _FakePluginResponse(200, {"Content-Length": str(55 * 1024 * 1024)}, chunks=[b"zip"])},
+    )
+
+    asyncio.run(plugin_common.download_plugin_zip(source, tmp_path / "plugin.tmp"))
+    assert (tmp_path / "plugin.tmp").read_bytes() == b"zip"
+
+
+def test_plugin_proxy_removes_the_partial_download_when_it_fails(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_BYTES", 10)
+    _patch_plugin_session(monkeypatch, {_CANONICAL_A: _FakePluginResponse(200, chunks=[b"123456"] * 3)})
+
+    with pytest.raises(RuntimeError, match="too large"):
+        asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A))
+
+    cache_path = plugin_common.plugin_cache_path(tmp_path, _CANONICAL_A)
+    assert not cache_path.exists()
+    assert list(cache_path.parent.iterdir()) == []
+
+
+def test_plugin_proxy_streams_cache_hits_from_disk(tmp_path: Path, monkeypatch) -> None:
+    from fastapi.responses import FileResponse
+    from https_server.routes.plugin import common as plugin_common
+
+    supervisor = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+    cache_path = plugin_common.plugin_cache_path(supervisor.paths.runtime_dir, _CANONICAL_A)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b"cached-zip")
+    os.utime(cache_path, (1_000, 1_000))
+
+    async def fail_download(source_url: str, dest_path: Path) -> str:
+        raise AssertionError(f"download should not be called for {source_url}")
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", fail_download)
+
+    direct = asyncio.run(
+        plugin_common.plugin_proxy_response(runtime_dir=supervisor.paths.runtime_dir, source_url=_CANONICAL_A)
+    )
+    assert isinstance(direct, FileResponse)
+    assert cache_path.stat().st_mtime > 1_000
+
+    response = client.get(plugin_common.plugin_proxy_url(supervisor.context, _CANONICAL_A).removeprefix(
+        "https://api-roborock.example.com"
+    ))
+    assert response.status_code == 200
+    assert response.content == b"cached-zip"
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["Cache-Control"] == "public, max-age=86400"
+    assert response.headers["X-RR-Plugin-Cache"] == "hit"
+
+
+def test_plugin_proxy_remembers_upstream_failures(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    now = {"value": 1_000.0}
+    monkeypatch.setattr(plugin_common.time, "monotonic", lambda: now["value"])
+    requested = _patch_plugin_session(monkeypatch, {_CANONICAL_A: _FakePluginResponse(404)})
+
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A))
+    assert requested == [_CANONICAL_A]
+
+    now["value"] += plugin_common.PLUGIN_PROXY_FAILURE_TTL_SECONDS
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A))
+    assert requested == [_CANONICAL_A, _CANONICAL_A]
+
+
+def test_plugin_proxy_does_not_remember_local_or_network_failures(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    calls: list[str] = []
+
+    async def flaky_download(source_url: str, dest_path: Path) -> str:
+        calls.append(source_url)
+        raise plugin_common.aiohttp.ClientConnectionError("connection reset")
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", flaky_download)
+    for _ in range(2):
+        with pytest.raises(plugin_common.aiohttp.ClientConnectionError):
+            asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A))
+    assert calls == [_CANONICAL_A, _CANONICAL_A]
+
+
+def test_plugin_proxy_bounds_remembered_failures(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_REMEMBERED_FAILURES", 2)
+    sources = [f"https://files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd{index:02x}.zip" for index in range(3)]
+    requested = _patch_plugin_session(monkeypatch, {source: _FakePluginResponse(404) for source in sources})
+
+    for source in sources + sources[:1]:
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            asyncio.run(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=source))
+
+    # The oldest failure was dropped to stay within the bound, so it is fetched again.
+    assert requested == sources + sources[:1]
+    assert len(plugin_common._plugin_downloads._failures) == 2
+

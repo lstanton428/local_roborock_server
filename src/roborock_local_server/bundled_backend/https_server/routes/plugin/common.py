@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from shared.context import ServerContext
 from ..auth.service import load_cloud_full_snapshot
@@ -23,16 +25,21 @@ PLUGIN_PROXY_ALLOWED_HOSTS = {
     "cdn.awsusor0.fds.api.mi-img.com",
 }
 
-PLUGIN_PROXY_MAX_BYTES = 32 * 1024 * 1024
+# Some built-in plugins are over 50 MiB; downloads stream to disk, not memory.
+PLUGIN_PROXY_MAX_BYTES = 128 * 1024 * 1024
 PLUGIN_PROXY_CACHE_MAX_BYTES = 512 * 1024 * 1024
 PLUGIN_PROXY_READ_CHUNK_BYTES = 64 * 1024
 # Plugin zips are published as <32 hex>.zip under /iot/plugin/ (Roborock hosts)
 # or /resources/iot/plugin/ (Xiaomi FDS CDN).
 PLUGIN_SOURCE_PATH_RE = re.compile(r"(?:/resources)?/iot/plugin/[0-9a-f]{32}\.zip")
 PLUGIN_PROXY_MAX_REDIRECTS = 5
-# Each download buffers up to PLUGIN_PROXY_MAX_BYTES, so cap how many run at once.
+# Each download writes up to PLUGIN_PROXY_MAX_BYTES to disk, so cap how many run at once.
 PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS = 4
 PLUGIN_PROXY_DOWNLOAD_SLOT_WAIT_SECONDS = 30.0
+# Upstream failures (such as 404 for an unknown name) are remembered per URL so
+# repeats fail fast instead of taking a download slot again.
+PLUGIN_PROXY_FAILURE_TTL_SECONDS = 600.0
+PLUGIN_PROXY_MAX_REMEMBERED_FAILURES = 256
 PLUGIN_PROXY_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 LEGACY_CATEGORY_PLUGIN_SOURCES = {
@@ -243,7 +250,15 @@ def plugin_cache_path(runtime_dir: Path, source_url: str) -> Path:
     return runtime_dir / "plugin_proxy_cache" / f"{digest}.zip"
 
 
-async def download_plugin_zip(source_url: str) -> tuple[bytes, str]:
+class PluginUpstreamError(RuntimeError):
+    """The upstream response itself was unusable (bad status, redirect, size or body)."""
+
+
+async def download_plugin_zip(source_url: str, dest_path: Path) -> str:
+    """Stream the plugin zip at source_url into dest_path and return its content type.
+
+    The caller owns dest_path and removes it if this raises.
+    """
     timeout = aiohttp.ClientTimeout(total=45)
     headers = {"User-Agent": "roborock-local-server/0.1"}
     url = source_url
@@ -255,32 +270,32 @@ async def download_plugin_zip(source_url: str) -> tuple[bytes, str]:
                 if status in PLUGIN_PROXY_REDIRECT_STATUSES:
                     location = str(response.headers.get("Location") or "").strip()
                     if not location:
-                        raise RuntimeError(f"upstream returned HTTP {status} without a Location")
+                        raise PluginUpstreamError(f"upstream returned HTTP {status} without a Location")
                     next_url = urljoin(url, location)
                     if not is_allowed_plugin_source(next_url):
-                        raise RuntimeError(f"upstream redirected to a disallowed host: {urlparse(next_url).hostname}")
+                        raise PluginUpstreamError(
+                            f"upstream redirected to a disallowed host: {urlparse(next_url).hostname}"
+                        )
                     url = next_url
                     continue
                 if status != 200:
-                    raise RuntimeError(f"upstream returned HTTP {status}")
+                    raise PluginUpstreamError(f"upstream returned HTTP {status}")
                 content_length = str(response.headers.get("Content-Length") or "").strip()
                 if content_length.isdigit() and int(content_length) > PLUGIN_PROXY_MAX_BYTES:
-                    raise RuntimeError(
+                    raise PluginUpstreamError(
                         f"plugin too large: {content_length} bytes exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit"
                     )
-                chunks: list[bytes] = []
                 size = 0
-                async for chunk in response.content.iter_chunked(PLUGIN_PROXY_READ_CHUNK_BYTES):
-                    size += len(chunk)
-                    if size > PLUGIN_PROXY_MAX_BYTES:
-                        raise RuntimeError(f"plugin too large: exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit")
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-                if not data:
-                    raise RuntimeError("upstream returned empty content")
-                content_type = str(response.headers.get("Content-Type") or "application/zip").strip()
-                return data, content_type
-    raise RuntimeError(f"upstream redirected more than {PLUGIN_PROXY_MAX_REDIRECTS} times")
+                with dest_path.open("wb") as handle:
+                    async for chunk in response.content.iter_chunked(PLUGIN_PROXY_READ_CHUNK_BYTES):
+                        size += len(chunk)
+                        if size > PLUGIN_PROXY_MAX_BYTES:
+                            raise PluginUpstreamError(f"plugin too large: exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit")
+                        handle.write(chunk)
+                if not size:
+                    raise PluginUpstreamError("upstream returned empty content")
+                return str(response.headers.get("Content-Type") or "application/zip").strip()
+    raise PluginUpstreamError(f"upstream redirected more than {PLUGIN_PROXY_MAX_REDIRECTS} times")
 
 
 def evict_plugin_cache(cache_dir: Path, *, keep: Path, max_bytes: int) -> None:
@@ -310,6 +325,8 @@ class _PluginDownloads:
 
     Requests for a URL that is already downloading share that download, and at
     most PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS different URLs download at once.
+    Upstream failures are remembered for PLUGIN_PROXY_FAILURE_TTL_SECONDS so a
+    repeated request for a missing plugin fails without downloading again.
     asyncio primitives belong to one event loop, so the state is rebuilt when
     the running loop changes.
     """
@@ -317,14 +334,16 @@ class _PluginDownloads:
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._slots: asyncio.Semaphore | None = None
-        self._in_flight: dict[str, asyncio.Future[tuple[bytes, str]]] = {}
+        self._in_flight: dict[str, asyncio.Future[str]] = {}
+        self._failures: OrderedDict[str, tuple[float, str]] = OrderedDict()
 
-    async def fetch(self, source_url: str, cache_path: Path) -> tuple[bytes, str]:
+    async def fetch(self, source_url: str, cache_path: Path) -> str:
         loop = asyncio.get_running_loop()
         if loop is not self._loop or self._slots is None:
             self._loop = loop
             self._slots = asyncio.Semaphore(PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS)
             self._in_flight = {}
+        self._raise_remembered_failure(source_url)
         task = self._in_flight.get(source_url)
         if task is None:
             task = asyncio.ensure_future(self._download_to_cache(self._slots, source_url, cache_path))
@@ -334,53 +353,73 @@ class _PluginDownloads:
         # the other requests waiting on it.
         return await asyncio.shield(task)
 
-    def _finished(self, source_url: str, done: asyncio.Future[tuple[bytes, str]]) -> None:
+    def _raise_remembered_failure(self, source_url: str) -> None:
+        remembered = self._failures.get(source_url)
+        if remembered is None:
+            return
+        expires_at, message = remembered
+        if time.monotonic() >= expires_at:
+            del self._failures[source_url]
+            return
+        raise PluginUpstreamError(f"{message} (recent failure; not retried yet)")
+
+    def _remember_failure(self, source_url: str, exc: BaseException) -> None:
+        self._failures.pop(source_url, None)
+        self._failures[source_url] = (time.monotonic() + PLUGIN_PROXY_FAILURE_TTL_SECONDS, str(exc))
+        while len(self._failures) > PLUGIN_PROXY_MAX_REMEMBERED_FAILURES:
+            self._failures.popitem(last=False)
+
+    def _finished(self, source_url: str, done: asyncio.Future[str]) -> None:
         if self._in_flight.get(source_url) is done:
             del self._in_flight[source_url]
-        if not done.cancelled():
-            done.exception()  # Mark retrieved even if every waiter went away.
+        if done.cancelled():
+            return
+        exc = done.exception()  # Mark retrieved even if every waiter went away.
+        if isinstance(exc, PluginUpstreamError):
+            self._remember_failure(source_url, exc)
 
     @staticmethod
     async def _download_to_cache(
         slots: asyncio.Semaphore,
         source_url: str,
         cache_path: Path,
-    ) -> tuple[bytes, str]:
+    ) -> str:
         try:
             await asyncio.wait_for(slots.acquire(), timeout=PLUGIN_PROXY_DOWNLOAD_SLOT_WAIT_SECONDS)
         except asyncio.TimeoutError as exc:
             raise RuntimeError("too many plugin downloads in progress") from exc
+        temp_path = cache_path.with_suffix(".tmp")
         try:
-            payload, content_type = await download_plugin_zip(source_url)
+            content_type = await download_plugin_zip(source_url, temp_path)
+            temp_path.replace(cache_path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
         finally:
             slots.release()
-        temp_path = cache_path.with_suffix(".tmp")
-        temp_path.write_bytes(payload)
-        temp_path.replace(cache_path)
         evict_plugin_cache(cache_path.parent, keep=cache_path, max_bytes=PLUGIN_PROXY_CACHE_MAX_BYTES)
-        return payload, content_type
+        return content_type
 
 
 _plugin_downloads = _PluginDownloads()
+
+
+def _cached_zip_response(cache_path: Path, *, media_type: str, cache_state: str) -> FileResponse:
+    return FileResponse(
+        cache_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400", "X-RR-Plugin-Cache": cache_state},
+    )
 
 
 async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Response:
     cache_path = plugin_cache_path(runtime_dir, source_url)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
-        payload = cache_path.read_bytes()
         # Refresh mtime so eviction treats it as recently used.
         os.utime(cache_path)
-        return Response(
-            content=payload,
-            media_type="application/zip",
-            headers={"Cache-Control": "public, max-age=86400", "X-RR-Plugin-Cache": "hit"},
-        )
+        return _cached_zip_response(cache_path, media_type="application/zip", cache_state="hit")
 
-    payload, upstream_content_type = await _plugin_downloads.fetch(source_url, cache_path)
+    upstream_content_type = await _plugin_downloads.fetch(source_url, cache_path)
     media_type = upstream_content_type if "zip" in upstream_content_type.lower() else "application/zip"
-    return Response(
-        content=payload,
-        media_type=media_type,
-        headers={"Cache-Control": "public, max-age=86400", "X-RR-Plugin-Cache": "miss"},
-    )
+    return _cached_zip_response(cache_path, media_type=media_type, cache_state="miss")

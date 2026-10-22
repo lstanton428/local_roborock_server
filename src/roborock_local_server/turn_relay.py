@@ -8,6 +8,7 @@ import socket
 import subprocess
 import time
 
+from .bundled_backend.shared.io_utils import atomic_write_text
 from .config import TurnConfig
 
 
@@ -42,7 +43,7 @@ class EmbeddedTurnRelay:
         LOG.info("TURN advertised IPv4 address resolved from %s: %s", self.config.host, external_ip)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         config_path = self.state_dir / "turnserver.conf"
-        config_path.write_text("\n".join([
+        atomic_write_text(config_path, "\n".join([
             f"listening-port={self.config.port}",
             f"external-ip={external_ip}",
             f"min-port={RELAY_PORT_MIN}",
@@ -60,8 +61,7 @@ class EmbeddedTurnRelay:
             "simple-log",
             "log-file=stdout",
             "",
-        ]), encoding="utf-8")
-        config_path.chmod(0o600)
+        ]))
         self.process = subprocess.Popen(
             ["turnserver", "-c", str(config_path)],
             stdin=subprocess.DEVNULL,

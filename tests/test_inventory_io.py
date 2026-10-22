@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ def test_replace_failure_preserves_old_inventory_and_cleans_temp(tmp_path, monke
     def fail_replace(*args):
         raise OSError("disk failure")
 
-    monkeypatch.setattr(inventory_io.os, "replace", fail_replace)
+    monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError):
         inventory_io.atomic_write_inventory(path, {"devices": []})
     assert path.read_bytes() == original

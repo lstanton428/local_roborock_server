@@ -13,11 +13,12 @@ from dataclasses import dataclass
 from getpass import getpass
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import secrets
 from urllib.parse import urlsplit
+
+from .bundled_backend.shared.io_utils import atomic_write_text
 
 
 def _urlsafe_b64encode(data: bytes) -> str:
@@ -415,23 +416,18 @@ def write_config_setup(
             raise FileExistsError(f"Refusing to overwrite existing file(s): {joined}. Re-run with --force to replace them.")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(render_config_toml(answers), encoding="utf-8")
+    atomic_write_text(config_path, render_config_toml(answers))
 
     written_token_path: Path | None = None
     written_actalis_kid_path: Path | None = None
     written_actalis_hmac_path: Path | None = None
     if answers.tls_mode == "cloudflare_acme":
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(answers.cloudflare_token, encoding="utf-8")
-        if os.name != "nt":
-            token_path.chmod(0o600)
+        atomic_write_text(token_path, answers.cloudflare_token)
         written_token_path = token_path
         if answers.acme_server == "actalis":
-            actalis_kid_path.write_text(answers.acme_eab_kid, encoding="utf-8")
-            actalis_hmac_path.write_text(answers.acme_eab_hmac_key, encoding="utf-8")
-            if os.name != "nt":
-                actalis_kid_path.chmod(0o600)
-                actalis_hmac_path.chmod(0o600)
+            atomic_write_text(actalis_kid_path, answers.acme_eab_kid)
+            atomic_write_text(actalis_hmac_path, answers.acme_eab_hmac_key)
             written_actalis_kid_path = actalis_kid_path
             written_actalis_hmac_path = actalis_hmac_path
         else:

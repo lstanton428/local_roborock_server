@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import secrets
 import tomllib
-import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
+from .bundled_backend.shared.io_utils import atomic_write_text
 from .configure import hash_password
 from .config import LoggingConfig
 
@@ -279,15 +278,7 @@ def _render_config_toml(
             if not turn_password:
                 turn_password = secrets.token_urlsafe(32)
                 credentials_path.parent.mkdir(parents=True, exist_ok=True)
-                descriptor, temporary = tempfile.mkstemp(prefix=".turn_password-", dir=credentials_path.parent)
-                try:
-                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                        handle.write(turn_password)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    os.replace(temporary, credentials_path)
-                finally:
-                    Path(temporary).unlink(missing_ok=True)
+                atomic_write_text(credentials_path, turn_password)
     elif turn_mode == "external":
         for field, value in (("turn_host", turn_host), ("turn_username", turn_username), ("turn_password", turn_password)):
             _require_non_empty(value, field_name=field)
@@ -401,13 +392,11 @@ def write_config_from_home_assistant_options(
         acme_eab_hmac_key_path=acme_eab_hmac_key_path,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(config_text, encoding="utf-8")
+    atomic_write_text(config_path, config_text)
     managed_secret_paths = (cloudflare_token_path, acme_eab_kid_path, acme_eab_hmac_key_path)
     for path, contents in secrets_to_write.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(contents, encoding="utf-8")
-        if os.name != "nt":
-            path.chmod(0o600)
+        atomic_write_text(path, contents)
     for path in managed_secret_paths:
         if path not in secrets_to_write and path.exists():
             path.unlink()

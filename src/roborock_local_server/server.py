@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import secrets
 import signal
@@ -30,7 +31,7 @@ from .product_registry import resolve_product_metadata
 from .bundled_backend.shared.runtime_state import ONBOARDING_STEP_LABELS, REQUIRED_ONBOARDING_STEPS
 from .cloud import CloudImportManager
 from .config import AppConfig, AppPaths, load_config, resolve_paths
-from .log_retention import configure_jsonl_logging
+from .log_retention import configure_jsonl_logging, log_paths
 from .turn_relay import EmbeddedTurnRelay
 from .standalone_admin import register_standalone_admin_routes
 from .backend import (
@@ -53,6 +54,7 @@ from .backend import (
     strip_roborock_prefix,
 )
 from shared.inventory_io import atomic_write_inventory, inventory_transaction
+from shared.io_utils import atomic_write_text, restrict_to_owner
 from shared.protocol_auth import ProtocolAuthStore
 from https_server.routes.user.scene import validity as scene_validity
 from https_server.routes.auth.service import (
@@ -380,7 +382,7 @@ class ReleaseSupervisor:
 
         if not self.paths.device_key_state_path.exists():
             self.paths.device_key_state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.paths.device_key_state_path.write_text('{"devices":{}}\n', encoding="utf-8")
+            atomic_write_text(self.paths.device_key_state_path, '{"devices":{}}\n')
         self._onboarded_device_persist_lock = threading.Lock()
         self.runtime_credentials = RuntimeCredentialsStore(
             self.paths.runtime_credentials_path,
@@ -1559,7 +1561,7 @@ class ReleaseSupervisor:
                 output.append("")
             output.extend(["[admin]", f"{key} = {rendered_value}"])
 
-        config_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+        atomic_write_text(config_path, "\n".join(output) + "\n")
 
     def set_protocol_auth_enabled(self, enabled: bool) -> dict[str, Any]:
         normalized_enabled = bool(enabled)
@@ -2047,14 +2049,46 @@ class ReleaseSupervisor:
         return 0
 
 
+def secret_file_paths(paths: AppPaths) -> list[Path]:
+    """Files holding credentials, keys or tokens that should be owner-only."""
+    device_key_state = paths.device_key_state_path
+    return [
+        paths.config_file,
+        paths.inventory_path,
+        paths.cloud_snapshot_path,
+        paths.protocol_auth_sessions_path,
+        paths.runtime_credentials_path,
+        device_key_state,
+        device_key_state.with_suffix(device_key_state.suffix + ".tmp"),
+        paths.cloudflare_token_file,
+        paths.acme_eab_kid_file,
+        paths.acme_eab_hmac_key_file,
+        paths.key_file,
+        paths.state_dir / "turn_password",
+        paths.state_dir / "turn_relay" / "turnserver.conf",
+        *log_paths(paths.http_jsonl_path),
+        *log_paths(paths.mqtt_jsonl_path),
+        *log_paths(paths.runtime_dir / "mqtt_server.log"),
+    ]
+
+
 async def run_server(*, config_file: Path, enable_standalone_admin: bool = True) -> int:
     config = load_config(config_file)
     paths = resolve_paths(config_file, config)
+    if os.name != "nt":
+        # Files and directories created from here on (state, traces, logs,
+        # certificates, helper process output) are owner-only.
+        os.umask(0o077)
     supervisor = ReleaseSupervisor(
         config=config,
         paths=paths,
         enable_standalone_admin=enable_standalone_admin,
     )
+    restricted = restrict_to_owner(secret_file_paths(paths))
+    if restricted:
+        supervisor.root_logger.info(
+            "Restricted %d existing secret file(s) to owner-only permissions", len(restricted)
+        )
     return await supervisor.serve_forever()
 
 

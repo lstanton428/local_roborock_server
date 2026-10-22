@@ -605,13 +605,15 @@ def test_empty_generated_turn_password_is_replaced_atomically(tmp_path, monkeypa
     password_path = tmp_path / "state" / "turn_password"
     password_path.parent.mkdir()
     password_path.write_text("")
-    actual_replace = ha_addon.os.replace
+    from roborock_local_server.bundled_backend.shared import io_utils
+    actual_replace = io_utils.os.replace
     replacements = []
     def replace(source, target):
-        assert len(Path(source).read_text()) >= 32
-        replacements.append(target)
+        if Path(target) == password_path:
+            assert len(Path(source).read_text()) >= 32
+        replacements.append(Path(target))
         actual_replace(source, target)
-    monkeypatch.setattr(ha_addon.os, "replace", replace)
+    monkeypatch.setattr(io_utils.os, "replace", replace)
     write_config_from_home_assistant_options(options_path=options_path, config_path=tmp_path / "config.toml")
-    assert replacements == [password_path]
+    assert replacements[0] == password_path
     assert len(password_path.read_text()) >= 32

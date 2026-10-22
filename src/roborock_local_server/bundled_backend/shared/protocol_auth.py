@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Any, Mapping
 
+from .io_utils import atomic_write_text
+
 
 def _clean_str(value: Any) -> str:
     return str(value or "").strip()
@@ -346,7 +348,7 @@ class ProtocolAuthStore:
             return
         payload = {"version": 1, "sessions": records[: self.max_persisted_sessions]}
         self.session_store_path.parent.mkdir(parents=True, exist_ok=True)
-        self.session_store_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(self.session_store_path, json.dumps(payload, indent=2) + "\n")
         try:
             stat = self.session_store_path.stat()
         except OSError:

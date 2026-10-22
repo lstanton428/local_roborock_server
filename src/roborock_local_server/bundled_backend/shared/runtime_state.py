@@ -212,6 +212,13 @@ class RuntimeState:
                 maybe_did = self._resolve_did_from_pid_locked(normalized_pid)
                 if maybe_did:
                     resolved_did = maybe_did
+            self._bind_pairing_http_identity_locked(
+                event_time=event_time,
+                route_name=route_name,
+                clean_path=clean_path,
+                identifier=resolved_did,
+                remote_ip=ip,
+            )
             storage_id = self._http_event_storage_id_locked(
                 event_time=event_time,
                 route_name=route_name,
@@ -437,6 +444,9 @@ class RuntimeState:
                 "target_ip": "",
                 "selected_name": str(target_name or "").strip(),
                 "identity_conflict": "",
+                # Identity of the first vacuum seen on /region or /nc in this session.
+                "bound_ip": "",
+                "bound_did": "",
             }
             return self._pairing_snapshot_locked()
 
@@ -460,12 +470,49 @@ class RuntimeState:
             session = self._pairing_session
             if session is None or not session.get("active"):
                 return ""
+            if str(session.get("identity_conflict") or "").strip():
+                return ""
             target_did = str(session.get("target_did") or "").strip()
             if target_did:
                 return target_did
             selected_duid = str(session.get("target_duid") or "").strip()
             selected_vac = self._find_vacuum_by_identity_locked(duid=selected_duid) if selected_duid else None
             return str((selected_vac or {}).get("did") or "").strip()
+
+    def observe_onboarding_request(
+        self,
+        *,
+        event_time: str,
+        route_name: str,
+        clean_path: str,
+        remote: str,
+        did: str | None,
+    ) -> None:
+        """Apply onboarding identity binding before the route runs (``record_http_event`` repeats it)."""
+        with self._lock:
+            self._bind_pairing_http_identity_locked(
+                event_time=event_time,
+                route_name=route_name,
+                clean_path=clean_path,
+                identifier=(did or "").strip(),
+                remote_ip=_extract_ip(remote),
+            )
+
+    def onboarding_allows_model_match(self, did: str) -> bool:
+        """Whether /nc may match ``did`` to an existing device record by model alone.
+
+        During an onboarding session that is in conflict, or whose bound vacuum has a
+        different did, a model-only match could hand another device's record (and its
+        localKey) to the wrong client, so the did gets its own record instead.
+        """
+        with self._lock:
+            session = self._pairing_session
+            if session is None or not session.get("active"):
+                return True
+            if str(session.get("identity_conflict") or "").strip():
+                return False
+            bound_did = str(session.get("bound_did") or "").strip()
+            return not bound_did or bound_did == did.strip()
 
     def onboarding_device_mqtt_candidate(self, *, client_ip: str) -> dict[str, str] | None:
         normalized_ip = client_ip.strip()
@@ -633,6 +680,8 @@ class RuntimeState:
 
         selected_duid = str(session.get("target_duid") or "").strip()
         if not selected_duid:
+            return normalized
+        if session.get("identity_conflict"):
             return normalized
         if self._resolve_identity_kind_locked(normalized) != "did":
             return normalized
@@ -891,7 +940,7 @@ class RuntimeState:
         if target_duid and session.get("target_duid") != target_duid:
             session["target_duid"] = target_duid
             changed = True
-        if target_ip and session.get("target_ip") != target_ip:
+        if target_ip and not session.get("bound_ip") and session.get("target_ip") != target_ip:
             session["target_ip"] = target_ip
             changed = True
         selected_name = (
@@ -1014,6 +1063,9 @@ class RuntimeState:
         normalized_did = did.strip()
         if not normalized_did:
             return False
+        if session.get("identity_conflict"):
+            # Only restarting the session clears a conflict.
+            return False
 
         changed = False
         target_duid = str(session.get("target_duid") or "").strip()
@@ -1031,9 +1083,6 @@ class RuntimeState:
                 if changed:
                     session["updated_at"] = event_time
                 return changed
-            if session.get("identity_conflict"):
-                session["identity_conflict"] = ""
-                changed = True
             if merged is not None and target_duid:
                 vac = self._ensure_vacuum_locked(target_duid)
                 vac["did"] = normalized_did
@@ -1048,6 +1097,69 @@ class RuntimeState:
         if changed:
             session["updated_at"] = event_time
         return changed
+
+    def _bind_pairing_http_identity_locked(
+        self,
+        *,
+        event_time: str,
+        route_name: str,
+        clean_path: str,
+        identifier: str,
+        remote_ip: str,
+    ) -> None:
+        """Bind the session to the first vacuum on /region or /nc and flag any other one.
+
+        Later onboarding requests from another address or with another did are recorded
+        as an identity conflict instead of silently replacing (or being ignored by) the
+        first one. Dependent steps refuse while a conflict is set; restarting the session
+        clears it.
+        """
+        session = self._pairing_session
+        if session is None or not session.get("active"):
+            return
+        if not _is_same_or_newer_timestamp(event_time, str(session.get("started_at") or "")):
+            return
+        if route_name not in {"region", "nc_prepare", "login_key_sign"}:
+            return
+        if session.get("identity_conflict"):
+            return
+        normalized_identifier = identifier.strip()
+        if not normalized_identifier and not clean_path.strip("/"):
+            # A bare GET / (for example a browser checking the certificate) also matches
+            # the region route; it identifies no vacuum, so it neither binds nor conflicts.
+            return
+        normalized_ip = remote_ip.strip()
+        did = normalized_identifier if self._resolve_identity_kind_locked(normalized_identifier) == "did" else ""
+        bound_ip = str(session.get("bound_ip") or "").strip()
+        bound_did = str(session.get("bound_did") or "").strip()
+
+        conflict = ""
+        if bound_ip and normalized_ip and normalized_ip != bound_ip:
+            conflict = (
+                f"Onboarding request from {normalized_ip} does not match the vacuum already seen at {bound_ip} "
+                "in this session. Restart onboarding with only the intended vacuum."
+            )
+        elif bound_did and did and did != bound_did:
+            conflict = (
+                f"Onboarding request for DID {did} does not match DID {bound_did} already seen in this session. "
+                "Restart onboarding with only the intended vacuum."
+            )
+        if conflict:
+            logger.warning("Onboarding identity conflict: %s", conflict)
+            session["identity_conflict"] = conflict
+            session["updated_at"] = event_time
+            return
+
+        changed = False
+        if normalized_ip and not bound_ip:
+            session["bound_ip"] = normalized_ip
+            session["target_ip"] = normalized_ip
+            changed = True
+        if did and not bound_did:
+            session["bound_did"] = did
+            changed = True
+        if changed:
+            session["updated_at"] = event_time
 
     def _record_pairing_http_event_locked(
         self,
@@ -1083,7 +1195,7 @@ class RuntimeState:
             changed = True
 
         normalized_identifier = identifier.strip()
-        if normalized_identifier:
+        if normalized_identifier and not session.get("identity_conflict"):
             kind = self._resolve_identity_kind_locked(normalized_identifier)
             if kind == "did":
                 changed = self._adopt_pairing_did_locked(
@@ -1111,6 +1223,8 @@ class RuntimeState:
             return
         if not session.get("region_at") and not session.get("nc_at"):
             return
+        if session.get("identity_conflict"):
+            return
 
         normalized_ip = client_ip.strip()
         target_ip = str(session.get("target_ip") or "").strip()
@@ -1125,8 +1239,14 @@ class RuntimeState:
             )
             if not matches_target:
                 return
+        bound_did = str(session.get("bound_did") or "").strip()
+        if bound_did and normalized_did and normalized_did != bound_did:
+            return
 
         changed = False
+        if normalized_did and not bound_did and session.get("bound_ip"):
+            session["bound_did"] = normalized_did
+            changed = True
         if normalized_did:
             changed = self._adopt_pairing_did_locked(
                 session=session,

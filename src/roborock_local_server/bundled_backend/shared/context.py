@@ -234,9 +234,12 @@ class ServerContext:
             + (body_params.get("t") or [])
         ) or f"t_{secrets.token_hex(8)}"
         model = self.extract_pid(query_params, body_params)
+        # A did that conflicts with the active onboarding session must not be matched to an
+        # existing record (and its localKey) by model alone; it gets its own record instead.
+        allow_model_match = self.runtime_state is None or self.runtime_state.onboarding_allows_model_match(did)
         device_localkey = self.resolve_device_localkey(
             did=did,
-            model=model,
+            model=model if allow_model_match else "",
             source="onboarding_nc",
             assign_if_missing=True,
         )

@@ -120,6 +120,7 @@ Japan (No DST): `JST-9`
 - Some vacuums are slow on that final cycle and may take a few minutes before they say Wi-Fi connected or show up as connected in the server.
 - Some vacuums need 2-4 cycles total.
 - If something goes wrong, the CLI lets you `retry`, `refresh`, `reselect`, or `quit`.
+- A session is bound to the first vacuum that reaches `/region` or `/nc` (its IP address and `did`). If onboarding requests then arrive from a different address or with a different `did`, the session reports an identity conflict and stops linking credentials or accepting the vacuum's MQTT login. Make sure only the intended vacuum is pairing, then restart onboarding.
 
 You still need to reset the vacuum's Wi-Fi manually. On many Roborock models that means holding the two buttons on the dock or the left and right buttons on the vacuum for 3-5 seconds until you hear the Wi-Fi reset prompt. Do a Wi-Fi reset, not a full factory reset. If you are unsure, search for your exact model's Wi-Fi reset steps.
 

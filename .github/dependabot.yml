@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Keeps the digest-pinned base images in the Dockerfile current.
+  # (acme.sh is a plain download and is bumped by hand; see the Dockerfile.)
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Keeps the actions used by .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Keeps uv.lock (installed into the image with --require-hashes) current.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly

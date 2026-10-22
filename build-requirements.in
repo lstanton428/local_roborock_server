@@ -1,0 +1,5 @@
+# Build backend for `pip install --no-build-isolation /app` in the Dockerfile.
+# Keep in step with [build-system] in pyproject.toml, then regenerate
+# build-requirements.txt with:
+#   uv pip compile --generate-hashes --python-version 3.11 build-requirements.in -o build-requirements.txt
+hatchling==1.32.4

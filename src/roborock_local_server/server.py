@@ -62,7 +62,7 @@ from https_server.routes.auth.service import (
     with_current_server_urls,
 )
 from .bundled_backend.shared.zone_ranges_store import ZoneRangesStore
-from .security import AdminSessionManager, verify_password
+from .security import AdminSessionManager, derive_protocol_sync_secret, verify_password
 
 
 ALL_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
@@ -368,6 +368,7 @@ class ReleaseSupervisor:
         self.session_manager = AdminSessionManager(
             secret=config.admin.session_secret,
             ttl_seconds=config.admin.session_ttl_seconds,
+            binding=config.admin.password_hash,
         )
         self.cloud_manager = CloudImportManager(
             inventory_path=self.paths.inventory_path,
@@ -875,8 +876,13 @@ class ReleaseSupervisor:
 
     def _sync_secret_matches(self, headers: dict[str, str]) -> bool:
         provided = _pick_first_header(headers, ("x-local-sync-secret", "X-Local-Sync-Secret"))
-        expected = str(self.config.admin.session_secret or "").strip()
-        return bool(expected) and secrets.compare_digest(provided, expected)
+        root_secret = str(self.config.admin.session_secret or "").strip()
+        if not root_secret:
+            return False
+        return secrets.compare_digest(
+            provided.encode("utf-8"),
+            derive_protocol_sync_secret(root_secret).encode("utf-8"),
+        )
 
     async def _handle_protocol_sync_route(
         self,
@@ -1513,7 +1519,7 @@ class ReleaseSupervisor:
         return {
             "protocol_auth_enabled": self.protocol_auth_enabled(),
             "new_connections_enabled": self.new_connections_enabled(),
-            "admin_session_secret": self.config.admin.session_secret,
+            "protocol_sync_secret": derive_protocol_sync_secret(self.config.admin.session_secret),
             "protocol_sessions": sessions,
             "protocol_session_count": len(sessions),
             "pending_device_mqtt_recovery": self._pending_device_mqtt_recovery_payload(),

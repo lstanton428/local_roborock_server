@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .configure import hash_password
+from .security import verify_password
 from .config import LoggingConfig
 
 DEFAULT_OPTIONS: dict[str, Any] = {
@@ -153,18 +154,30 @@ def _load_options(path: Path) -> dict[str, Any]:
     return parsed
 
 
-def _load_existing_admin_session_secret(config_path: Path) -> str:
+def _load_existing_admin_section(config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
-        return ""
+        return {}
     try:
         parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
-        return ""
+        return {}
     admin = parsed.get("admin")
-    if not isinstance(admin, dict):
-        return ""
-    secret = str(admin.get("session_secret", "") or "").strip()
+    return admin if isinstance(admin, dict) else {}
+
+
+def _load_existing_admin_session_secret(config_path: Path) -> str:
+    secret = str(_load_existing_admin_section(config_path).get("session_secret", "") or "").strip()
     return secret if len(secret) >= 24 else ""
+
+
+def _admin_password_hash(config_path: Path, admin_password: str) -> str:
+    # Admin session cookies are keyed to the password hash, so keep the stored
+    # hash while the password is unchanged; a fresh salt on every start would
+    # sign everyone out each time the app restarts.
+    existing = str(_load_existing_admin_section(config_path).get("password_hash", "") or "").strip()
+    if existing and verify_password(admin_password, existing):
+        return existing
+    return hash_password(admin_password)
 
 
 def _render_config_toml(
@@ -252,7 +265,7 @@ def _render_config_toml(
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
     protocol_login_pin = _require_pin(merged.get("protocol_login_pin"), field_name="protocol_login_pin")
 
-    password_hash = hash_password(admin_password)
+    password_hash = _admin_password_hash(config_path, admin_password)
     protocol_login_pin_hash = hash_password(protocol_login_pin)
     cloudflare_token_file = str(cloudflare_token_path)
     acme_eab_kid_file = str(acme_eab_kid_path) if acme_server == "actalis" else ""

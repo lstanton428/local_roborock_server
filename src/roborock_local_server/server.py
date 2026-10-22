@@ -2107,6 +2107,7 @@ class ReleaseSupervisor:
             zone_ranges_store=self.context.zone_ranges_store,
             tls_enabled=self._uses_local_tls(),
             on_onboarding_credentials_learned=self.persist_active_onboarding_device,
+            topic_acl_mode=self.config.broker.topic_acl,
         )
         self._mqtt_proxy.start()
         self.runtime_state.set_service("mqtt_tls_proxy", running=True, required=True, enabled=True)

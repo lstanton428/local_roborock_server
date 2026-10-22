@@ -41,6 +41,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "protocol_login_pin": "",
     "new_connections_window_minutes": 30,
     "admin_allowed_networks": [],
+    "mqtt_topic_acl": "audit",
     "turn_mode": "disabled",
     "turn_host": "",
     "turn_port": 3478,
@@ -253,6 +254,9 @@ def _render_config_toml(
     broker_mode = "embedded"
     broker_host = "127.0.0.1"
     broker_port = 18830
+    mqtt_topic_acl = str(merged.get("mqtt_topic_acl", "audit") or "audit").strip().lower()
+    if mqtt_topic_acl not in {"off", "audit", "enforce"}:
+        raise ValueError("mqtt_topic_acl must be 'off', 'audit' or 'enforce'")
 
     tls_mode = str(merged.get("tls_mode", "provided") or "provided").strip().lower()
     if tls_mode not in {"provided", "cloudflare_acme"}:
@@ -355,6 +359,7 @@ def _render_config_toml(
         f"port = {broker_port}",
         'mosquitto_binary = "mosquitto"',
         "enable_topic_bridge = true",
+        f"topic_acl = {_toml_string(mqtt_topic_acl)}",
         "",
         "[storage]",
         'data_dir = "/data"',

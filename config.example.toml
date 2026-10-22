@@ -26,6 +26,10 @@ host = "127.0.0.1"
 port = 18830
 mosquitto_binary = "mosquitto"
 enable_topic_bridge = true
+# Per-client MQTT topic permissions. "audit" (default) logs any publish or
+# subscribe outside the client's own topics as "topic ACL would block" in
+# mqtt_server.log; "enforce" disconnects the client instead; "off" skips it.
+topic_acl = "audit"
 
 [storage]
 data_dir = "/data"

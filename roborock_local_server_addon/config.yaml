@@ -87,6 +87,7 @@ options:
   protocol_login_pin: ""
   new_connections_window_minutes: 30
   admin_allowed_networks: []
+  mqtt_topic_acl: "audit"
   turn_mode: "disabled"
   turn_host: ""
   turn_port: 3478
@@ -119,6 +120,7 @@ schema:
   new_connections_window_minutes: int(0,1440)?
   admin_allowed_networks:
     - str?
+  mqtt_topic_acl: list(off|audit|enforce)?
   turn_mode: list(disabled|provided|external)?
   turn_host: str?
   turn_port: port?

@@ -36,6 +36,9 @@ class BrokerConfig:
     port: int
     mosquitto_binary: str
     enable_topic_bridge: bool
+    # Per-connection MQTT topic permissions: "audit" logs what would be
+    # blocked, "enforce" disconnects the client, "off" skips the check.
+    topic_acl: str = "audit"
 
 
 @dataclass(frozen=True)
@@ -260,6 +263,15 @@ def _as_hostname_tuple(value: object, field_name: str) -> tuple[str, ...]:
     return tuple(_normalize_hostname(item, field_name) for item in value)
 
 
+def _as_choice(value: object, field_name: str, choices: tuple[str, ...], default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text not in choices:
+        raise ValueError(f"{field_name} must be one of: {', '.join(choices)}")
+    return text
+
+
 def _as_bool(value: object, default: bool) -> bool:
     if value is None:
         return default
@@ -345,6 +357,7 @@ def load_config(path: str | Path) -> AppConfig:
             port=_as_port(broker.get("port"), "broker.port", broker_port_default),
             mosquitto_binary=str(broker.get("mosquitto_binary", "mosquitto")).strip() or "mosquitto",
             enable_topic_bridge=_as_bool(broker.get("enable_topic_bridge"), True),
+            topic_acl=_as_choice(broker.get("topic_acl"), "broker.topic_acl", ("off", "audit", "enforce"), "audit"),
         ),
         storage=StorageConfig(
             data_dir=str(storage.get("data_dir", "/data")).strip() or "/data",

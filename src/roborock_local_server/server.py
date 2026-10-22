@@ -10,12 +10,12 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import secrets
 import signal
 import socket
 import threading
 from typing import Any
-import re
 from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
@@ -221,6 +221,18 @@ def _redact_for_log(value: Any, *, sensitive: frozenset[str] = _SENSITIVE_LOG_FI
     return value
 
 
+def _redacted_raw_path(raw_path: str, query: Any) -> str:
+    """Rebuild raw_path from the redacted query when the query held anything sensitive."""
+    if not isinstance(query, dict):
+        return raw_path
+    redacted_query = _redact_for_log(query, sensitive=_SENSITIVE_REQUEST_LOG_FIELDS)
+    if redacted_query == query:
+        return raw_path
+    path, _, _ = raw_path.partition("?")
+    public_query = {key: values for key, values in redacted_query.items() if key != "__host"}
+    return f"{path}?{urlencode(public_query, doseq=True)}" if public_query else path
+
+
 def _redact_http_trace_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """Strip login codes, tokens and keys before a request is written to the trace."""
     redacted = dict(entry)
@@ -233,11 +245,8 @@ def _redact_http_trace_entry(entry: dict[str, Any]) -> dict[str, Any]:
             sensitive=_SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE.get(str(redacted.get("route") or ""), _SENSITIVE_LOG_FIELDS),
         )
 
-    query = redacted.get("query")
-    if isinstance(query, dict) and query != entry.get("query"):
-        path, _, _ = str(redacted.get("raw_path") or "").partition("?")
-        public_query = {key: values for key, values in query.items() if key != "__host"}
-        redacted["raw_path"] = f"{path}?{urlencode(public_query, doseq=True)}" if public_query else path
+    if "raw_path" in redacted:
+        redacted["raw_path"] = _redacted_raw_path(str(redacted["raw_path"] or ""), entry.get("query"))
 
     body_changed = redacted.get("body_json") != entry.get("body_json") or redacted.get("body_form") != entry.get(
         "body_form"
@@ -1145,7 +1154,7 @@ class ReleaseSupervisor:
             "remote": f"{client_host}:{client_port}",
         }
         # The admin dashboard lists recent requests, so keep login codes out of that copy too.
-        event_raw_path = str(_redact_http_trace_entry({"raw_path": raw_path, "query": entry["query"]})["raw_path"])
+        event_raw_path = _redacted_raw_path(raw_path, entry["query"])
         if explicit_did:
             entry["did"] = explicit_did
         if explicit_pid:

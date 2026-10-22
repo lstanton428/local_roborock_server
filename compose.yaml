@@ -5,6 +5,22 @@ services:
       dockerfile: Dockerfile
     container_name: roborock-local-server
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Mosquitto starts as root and drops to its own user.
+      - SETUID
+      - SETGID
+      # Stop that Mosquitto process (it runs under a different UID).
+      - KILL
+      # Root must still read and write ./data, ./config.toml and ./secrets when
+      # they are owned by your host user.
+      - DAC_OVERRIDE
+      # Listen on ports below 1024 (555 or 443) when the bind is not covered by
+      # Docker's unprivileged-port setting, e.g. with network_mode: host.
+      - NET_BIND_SERVICE
     ports:
       - "${ROBOROCK_SERVER_HTTPS_PORT:-555}:${ROBOROCK_SERVER_HTTPS_PORT:-555}"
       - "${ROBOROCK_SERVER_MQTT_TLS_PORT:-8881}:${ROBOROCK_SERVER_MQTT_TLS_PORT:-8881}"

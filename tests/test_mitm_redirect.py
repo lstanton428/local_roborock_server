@@ -1,6 +1,7 @@
 import importlib
 import io
 import json
+import re
 import ssl
 import sys
 import types
@@ -276,6 +277,19 @@ def test_host_only_local_api_still_defaults_to_555(monkeypatch) -> None:
 
     assert (host, port) == ("api-rr.example.com", 555)
     assert env_authority == "api-rr.example.com:555"
+
+
+def test_mitmweb_command_pins_exact_mitmproxy_version(monkeypatch) -> None:
+    mitm_redirect = _load_mitm_redirect(monkeypatch)
+
+    cmd = mitm_redirect._mitmweb_command("wireguard", "8080", ["--web-port", "8082"])
+
+    assert cmd[:4] == ["uvx", "--from", f"mitmproxy=={mitm_redirect.MITMPROXY_VERSION}", "mitmweb"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", mitm_redirect.MITMPROXY_VERSION)
+    assert cmd[cmd.index("--mode") + 1] == "wireguard"
+    assert cmd[cmd.index("--listen-port") + 1] == "8080"
+    assert cmd[-2:] == ["--web-port", "8082"]
+    assert cmd[cmd.index("-s") + 1].endswith("mitm_redirect.py")
 
 
 def test_derived_sync_secret_matches_server(monkeypatch) -> None:

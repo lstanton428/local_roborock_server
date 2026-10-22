@@ -43,6 +43,9 @@ LOCAL_WOOD_PORT: int | None = None
 LOCAL_SYNC_SECRET: str = ""
 DEFAULT_LOCAL_API_PORT = 555
 DEFAULT_LOCAL_MQTT_PORT = 8881
+# Exact mitmproxy release run by the launcher; uvx would otherwise fetch
+# whatever is newest on PyPI. Bump deliberately after testing this addon.
+MITMPROXY_VERSION = "12.2.3"
 
 
 # Domains whose responses are candidates for host rewrite.
@@ -218,6 +221,26 @@ def _init_log_dir() -> None:
     os.makedirs(LOG_DIR_PASSTHROUGH, exist_ok=True)
     ctx.log.info(f"[LOG] Rewritten    -> {LOG_DIR_REWRITE}")
     ctx.log.info(f"[LOG] Passthrough  -> {LOG_DIR_PASSTHROUGH}")
+
+
+def _mitmweb_command(mode: str, listen_port: str | None, extra: list[str]) -> list[str]:
+    cmd = [
+        "uvx",
+        "--from",
+        f"mitmproxy=={MITMPROXY_VERSION}",
+        "mitmweb",
+        "--mode",
+        mode,
+        "--set",
+        "connection_strategy=lazy",
+        "--set",
+        "http3=false",
+        "-s",
+        os.path.abspath(__file__),
+    ]
+    if listen_port:
+        cmd += ["--listen-port", listen_port]
+    return cmd + extra
 
 
 def _parse_endpoint(value: str, *, fallback_host: str = "", fallback_port: int | None = None) -> tuple[str, int | None]:
@@ -755,22 +778,5 @@ if __name__ == "__main__":
     else:
         print("[SYNC] protocol auth session sync disabled: no sync secret configured")
 
-    cmd = [
-        "uvx",
-        "--from",
-        "mitmproxy",
-        "mitmweb",
-        "--mode",
-        args.mode,
-        "--set",
-        "connection_strategy=lazy",
-        "--set",
-        "http3=false",
-        "-s",
-        os.path.abspath(__file__),
-    ]
-    if args.listen_port:
-        cmd += ["--listen-port", args.listen_port]
-    cmd += extra
-
+    cmd = _mitmweb_command(args.mode, args.listen_port, extra)
     sys.exit(subprocess.run(cmd, env=env).returncode)

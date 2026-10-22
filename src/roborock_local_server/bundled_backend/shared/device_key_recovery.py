@@ -26,8 +26,16 @@ from .data_helpers import utcnow_iso
 LOG = logging.getLogger("real_stack.device_key_recovery")
 DEFAULT_RSA_E = 65537
 MIN_RSA_SIGNATURE_BYTES = 128
+# RSA-1024/2048/4096 signature sizes; anything else cannot feed modulus recovery.
+RSA_SIGNATURE_BYTE_LENGTHS = frozenset({128, 256, 512})
 MAX_QUERY_SAMPLE_COUNT = 16
-MAX_HEADER_SAMPLE_COUNT = 64
+MAX_HEADER_SAMPLE_COUNT = 16
+# Samples arrive before any auth, so bound how many unrecovered dids may collect them.
+MAX_COLLECTING_DIDS = 8
+# Each recovery is a CPU/memory-heavy subprocess; run them one at a time.
+MAX_CONCURRENT_RECOVERIES = 1
+MAX_RESUMED_RECOVERIES = 2
+DID_LIMIT_WARNING_INTERVAL_SEC = 60.0
 SAVE_REPLACE_RETRIES = 8
 SAVE_REPLACE_RETRY_SEC = 0.05
 _MP_CTX = multiprocessing.get_context("spawn")
@@ -54,6 +62,13 @@ def split_signed_query(query: str) -> tuple[str, str] | None:
     except Exception:
         return None
     return canonical, signature_b64
+
+
+def _is_rsa_signature_b64(signature_b64: str) -> bool:
+    try:
+        return len(base64.b64decode(signature_b64, validate=True)) in RSA_SIGNATURE_BYTE_LENGTHS
+    except (ValueError, TypeError):
+        return False
 
 
 def split_v2_region_sample(sample: dict[str, str]) -> tuple[str, str] | None:
@@ -310,6 +325,8 @@ class DeviceKeyCache:
         self._modulus: dict[str, int] = {}
         self._pubkeys: dict[str, Any] = {}
         self._recovery_meta: dict[str, dict[str, str]] = {}
+        self._recovery_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RECOVERIES)
+        self._last_did_limit_warning = 0.0
 
         self._load()
         self._resume_pending_recoveries()
@@ -478,7 +495,14 @@ class DeviceKeyCache:
                 if len(samples) < 2:
                     continue
                 pending.append(did)
-        for did in pending:
+        pending.sort()
+        if len(pending) > MAX_RESUMED_RECOVERIES:
+            LOG.warning(
+                "Resuming key recovery for %d of %d pending dids; the rest resume on their next signed request.",
+                MAX_RESUMED_RECOVERIES,
+                len(pending),
+            )
+        for did in pending[:MAX_RESUMED_RECOVERIES]:
             self.maybe_recover_async(did)
 
     def _save(self) -> None:
@@ -550,12 +574,43 @@ class DeviceKeyCache:
         with self._lock:
             return self._pubkeys.get(did)
 
-    def add_signed_query(self, did: str, query: str) -> bool:
+    def _collecting_dids_locked(self) -> set[str]:
+        collecting: set[str] = set()
+        for did, samples in self._samples.items():
+            if any(_is_rsa_signature_b64(sig) for _canonical, sig in samples):
+                collecting.add(did)
+        for did, headers in self._header_samples.items():
+            if any(_is_rsa_signature_b64(sample.get("signature_b64", "")) for sample in headers):
+                collecting.add(did)
+        return collecting - set(self._pubkeys)
+
+    def _accepts_sample_locked(self, did: str, *, exempt_did_limit: bool) -> bool:
+        if did in self._pubkeys:
+            return False
+        if exempt_did_limit or did in self._samples or did in self._header_samples:
+            return True
+        if len(self._collecting_dids_locked()) < MAX_COLLECTING_DIDS:
+            return True
+        now = time.monotonic()
+        if now - self._last_did_limit_warning >= DID_LIMIT_WARNING_INTERVAL_SEC:
+            self._last_did_limit_warning = now
+            LOG.warning(
+                "Ignoring signature samples for new did=%s: %d dids are already collecting samples.",
+                did,
+                MAX_COLLECTING_DIDS,
+            )
+        return False
+
+    def add_signed_query(self, did: str, query: str, *, exempt_did_limit: bool = False) -> bool:
         parsed = split_signed_query(query)
         if not parsed or not did:
             return False
         canonical, signature_b64 = parsed
+        if not _is_rsa_signature_b64(signature_b64):
+            return False
         with self._lock:
+            if not self._accepts_sample_locked(did, exempt_did_limit=exempt_did_limit):
+                return False
             arr = self._samples.setdefault(did, [])
             if (canonical, signature_b64) in arr:
                 return False
@@ -580,6 +635,7 @@ class DeviceKeyCache:
         signature_b64: str,
         body_sha256: str = "",
         version: str = "",
+        exempt_did_limit: bool = False,
     ) -> bool:
         sign = (signature_b64 or "").strip()
         if not did or not sign:
@@ -587,6 +643,8 @@ class DeviceKeyCache:
         try:
             sig_len = len(base64.b64decode(sign, validate=True))
         except Exception:
+            return False
+        if sig_len not in RSA_SIGNATURE_BYTE_LENGTHS:
             return False
         entry = {
             "method": (method or "").strip().upper(),
@@ -600,6 +658,8 @@ class DeviceKeyCache:
             "version": (version or "").strip(),
         }
         with self._lock:
+            if not self._accepts_sample_locked(did, exempt_did_limit=exempt_did_limit):
+                return False
             arr = self._header_samples.setdefault(did, [])
             if entry in arr:
                 return False
@@ -670,17 +730,34 @@ class DeviceKeyCache:
 
             self._recovering.add(did)
             started_at = utcnow_iso()
+            recovering_note = f"Recovering RSA modulus from {sample_source} signatures ({hash_name})."
             self._set_recovery_meta_locked(
                 did,
                 state="recovering",
-                note=f"Recovering RSA modulus from {sample_source} signatures ({hash_name}).",
+                note=recovering_note,
                 started_at=started_at,
             )
             self._save_safe_locked()
 
         def _worker() -> None:
+            queued = not self._recovery_slots.acquire(blocking=False)
+            if queued:
+                with self._lock:
+                    self._set_recovery_meta_locked(
+                        did,
+                        state="recovering",
+                        note="Waiting for another public-key recovery to finish.",
+                    )
+                    self._save_safe_locked()
+                self._recovery_slots.acquire()
             started = time.time()
             try:
+                if queued:
+                    with self._lock:
+                        if did in self._pubkeys:
+                            return
+                        self._set_recovery_meta_locked(did, state="recovering", note=recovering_note)
+                        self._save_safe_locked()
                 parent_conn, child_conn = _MP_CTX.Pipe(duplex=False)
                 process = _MP_CTX.Process(
                     target=_recover_modulus_subprocess,
@@ -732,6 +809,9 @@ class DeviceKeyCache:
                     raise RuntimeError(error)
                 finished_at = utcnow_iso()
                 with self._lock:
+                    if did in self._pubkeys:
+                        # Never replace a key that is already in use for this did.
+                        return
                     if not modulus:
                         reason = diag.get("reason") or "see diagnostics"
                         note = f"Could not recover modulus from captured samples: {reason}"
@@ -779,6 +859,7 @@ class DeviceKeyCache:
                     exc_info=True,
                 )
             finally:
+                self._recovery_slots.release()
                 with self._lock:
                     self._recovering.discard(did)
 

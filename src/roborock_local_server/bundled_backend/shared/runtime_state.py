@@ -465,6 +465,11 @@ class RuntimeState:
     def pairing_snapshot(self) -> dict[str, Any]:
         return self.onboarding_session_snapshot()
 
+    def onboarding_session_active(self) -> bool:
+        with self._lock:
+            session = self._pairing_session
+            return session is not None and bool(session.get("active"))
+
     def active_onboarding_target_did(self) -> str:
         with self._lock:
             session = self._pairing_session

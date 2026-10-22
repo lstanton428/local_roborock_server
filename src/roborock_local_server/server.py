@@ -1000,6 +1000,15 @@ class ReleaseSupervisor:
         normalized = cls._normalized_path(clean_path)
         return cls._is_onboarding_region_path(normalized) or cls._is_onboarding_nc_prepare_path(normalized)
 
+    def _key_capture_allowed(self, did: str) -> bool:
+        """Collect key-recovery samples only while a vacuum could be pairing."""
+        if self.runtime_state.onboarding_session_active():
+            return True
+        if not self.new_connections_enabled():
+            return False
+        credentials = self.runtime_credentials
+        return credentials.resolve_device(did=did) is None and credentials.resolve_device(duid=did) is None
+
     @classmethod
     def _new_connection_flow_for_path(cls, clean_path: str) -> str | None:
         normalized = cls._normalized_path(clean_path)
@@ -1261,9 +1270,13 @@ class ReleaseSupervisor:
         explicit_model = _extract_explicit_model(query_params, body_params) or (
             explicit_pid if explicit_pid.startswith("roborock.") else ""
         )
+        onboarding_target_did = self.runtime_state.active_onboarding_target_did()
         key_capture_did = explicit_did
         if not key_capture_did and self._allows_onboarding_key_capture_fallback(clean_path, request.url.query):
-            key_capture_did = self.runtime_state.active_onboarding_target_did()
+            key_capture_did = onboarding_target_did
+        if key_capture_did and not self._key_capture_allowed(key_capture_did):
+            key_capture_did = ""
+        key_capture_exempt = bool(key_capture_did) and key_capture_did == onboarding_target_did
         key_cache = self.context.device_key_cache()
         request_headers = dict(request.headers)
         region_version = _pick_first_header(
@@ -1276,7 +1289,11 @@ class ReleaseSupervisor:
         if key_cache is not None and key_capture_did:
             if request.url.query:
                 try:
-                    query_sample_added = key_cache.add_signed_query(key_capture_did, request.url.query)
+                    query_sample_added = key_cache.add_signed_query(
+                        key_capture_did,
+                        request.url.query,
+                        exempt_did_limit=key_capture_exempt,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("key_cache add_signed_query failed did=%s: %s", key_capture_did, exc)
             sign = _pick_first_header(
@@ -1303,6 +1320,7 @@ class ReleaseSupervisor:
                         signature_b64=sign,
                         body_sha256=body_sha256,
                         version=region_version,
+                        exempt_did_limit=key_capture_exempt,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("key_cache add_header_signature failed did=%s: %s", key_capture_did, exc)

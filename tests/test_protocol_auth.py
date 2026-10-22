@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from conftest import write_release_config
 from roborock_local_server.config import load_config, resolve_paths
+from roborock_local_server.security import derive_protocol_sync_secret
 from roborock_local_server.server import PROTOCOL_AUTH_SYNC_PATH, ReleaseSupervisor
 from https_server.routes.auth.service import load_cloud_user_data
 from shared.protocol_auth import ProtocolAuthStore, build_hawk_authorization
@@ -410,7 +411,7 @@ def test_protocol_sync_route_persists_additional_sessions_and_redacts_logs(tmp_p
     sync_response = client.post(
         PROTOCOL_AUTH_SYNC_PATH,
         json={"source": "test_sync", "user_data": synced_user_data},
-        headers={"X-Local-Sync-Secret": "abcdefghijklmnopqrstuvwxyz123456"},
+        headers={"X-Local-Sync-Secret": derive_protocol_sync_secret("abcdefghijklmnopqrstuvwxyz123456")},
     )
     assert sync_response.status_code == 200
     assert sync_response.json()["data"]["stored"] is True
@@ -469,7 +470,7 @@ def test_local_issued_and_imported_sessions_coexist(tmp_path: Path) -> None:
     sync_response = client.post(
         PROTOCOL_AUTH_SYNC_PATH,
         json={"source": "test_sync", "user_data": imported_user_data},
-        headers={"X-Local-Sync-Secret": "abcdefghijklmnopqrstuvwxyz123456"},
+        headers={"X-Local-Sync-Secret": derive_protocol_sync_secret("abcdefghijklmnopqrstuvwxyz123456")},
     )
     assert sync_response.status_code == 200
 
@@ -526,3 +527,17 @@ def test_local_issued_and_imported_sessions_coexist(tmp_path: Path) -> None:
         },
     )
     assert imported_hawk_response.status_code == 200
+
+
+def test_protocol_sync_route_rejects_raw_session_secret(tmp_path: Path) -> None:
+    supervisor, _paths = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+
+    response = client.post(
+        PROTOCOL_AUTH_SYNC_PATH,
+        json={"source": "test_sync", "user_data": {}},
+        headers={"X-Local-Sync-Secret": supervisor.config.admin.session_secret},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["data"]["reason"] == "invalid_sync_secret"

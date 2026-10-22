@@ -276,3 +276,12 @@ def test_host_only_local_api_still_defaults_to_555(monkeypatch) -> None:
 
     assert (host, port) == ("api-rr.example.com", 555)
     assert env_authority == "api-rr.example.com:555"
+
+
+def test_derived_sync_secret_matches_server(monkeypatch) -> None:
+    from roborock_local_server.security import derive_protocol_sync_secret
+
+    mitm_redirect = _load_mitm_redirect(monkeypatch)
+    secret = "abcdefghijklmnopqrstuvwxyz123456"
+
+    assert mitm_redirect._derive_protocol_sync_secret(secret) == derive_protocol_sync_secret(secret)

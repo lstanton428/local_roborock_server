@@ -58,7 +58,7 @@ After the dashboard opens, complete the same post-start steps as the Docker inst
 2. Confirm the expected vacuum appears in the inventory.
 3. Run [Onboarding](onboarding.md) from a second machine to pair the vacuum to the local stack.
 
-If you need the MITM protocol sync secret for the Roborock app flow, sign in to the admin page and open **Protocol Auth**. The dashboard shows the active `admin.session_secret`, so you do not need to inspect `/data/config.toml` manually.
+If you need the MITM protocol sync secret for the Roborock app flow, sign in to the admin page and open **Protocol Auth**. The dashboard shows the **Protocol Sync Secret**, which is derived from `admin.session_secret` and only works for the sync callback, so you do not need to inspect `/data/config.toml` manually.
 
 ### Beta add-on
 

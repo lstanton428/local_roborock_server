@@ -11,7 +11,10 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -329,6 +332,13 @@ def _write_sync_failure_response(flow: http.HTTPFlow, exc: SyncEndpointError) ->
     flow.response.content = json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
+def _derive_protocol_sync_secret(root_secret: str) -> str:
+    # Mirrors roborock_local_server.security.derive_protocol_sync_secret; this
+    # script runs standalone, so it cannot import the package.
+    digest = hmac.new(root_secret.encode("utf-8"), b"rrls/protocol-sync/v1\x00", hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 def _load_local_sync_secret() -> str:
     config_path = os.path.join(SCRIPT_DIR, "config.toml")
     if not os.path.exists(config_path):
@@ -341,7 +351,8 @@ def _load_local_sync_secret() -> str:
     admin = parsed.get("admin")
     if not isinstance(admin, dict):
         return ""
-    return str(admin.get("session_secret") or "").strip()
+    root_secret = str(admin.get("session_secret") or "").strip()
+    return _derive_protocol_sync_secret(root_secret) if root_secret else ""
 
 
 def load(loader) -> None:
@@ -685,7 +696,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sync-secret",
         default=None,
-        help="Optional admin.session_secret for protocol auth sync. Defaults to ./config.toml beside this script when available; pass explicitly when the server uses a different active config.",
+        help="Optional protocol sync secret, shown under Protocol Auth in the admin dashboard. Defaults to ./config.toml beside this script when available; pass explicitly when the server uses a different active config.",
     )
     parser.add_argument("--mode", default="wireguard", help="mitmweb proxy mode (default: wireguard)")
     parser.add_argument("--listen-port", default=None, help="mitmweb listen port")

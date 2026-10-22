@@ -159,7 +159,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           document.getElementById("newConnectionsEnabled").checked = enabled;
           document.getElementById("authMeta").textContent =
             `New connections: ${{enabled ? "Allowed" : "Blocked"}}. Persisted sessions: ${{Number(auth.protocol_session_count || 0)}}.`;
-          const sessionSecret = String(auth.admin_session_secret || "");
+          const sessionSecret = String(auth.protocol_sync_secret || "");
           document.getElementById("adminSessionSecret").value = sessionSecret;
           document.getElementById("syncSecretMeta").textContent = sessionSecret
             ? "Use this with mitm_redirect.py --sync-secret ..."

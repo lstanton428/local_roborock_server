@@ -8,6 +8,7 @@ from roborock.data import HomeData
 
 from conftest import write_release_config
 from roborock_local_server.config import load_config, resolve_paths
+from roborock_local_server.security import derive_protocol_sync_secret
 from roborock_local_server.config import TurnConfig
 from roborock_local_server.server import ReleaseSupervisor, resolve_route
 from shared.constants import DEFAULT_PRODUCT_SCHEMA
@@ -327,7 +328,9 @@ def test_admin_auth_endpoints_toggle_new_connections_and_manage_sessions(tmp_pat
     auth_json = auth_payload.json()
     assert auth_json["protocol_auth_enabled"] is True
     assert auth_json["new_connections_enabled"] is True
-    assert auth_json["admin_session_secret"] == config.admin.session_secret
+    assert auth_json["protocol_sync_secret"] == derive_protocol_sync_secret(config.admin.session_secret)
+    assert auth_json["protocol_sync_secret"] != config.admin.session_secret
+    assert "admin_session_secret" not in auth_json
     assert auth_json["protocol_session_count"] >= 1
     session = next(item for item in auth_json["protocol_sessions"] if item["hawk_id"] == issued["rriot"]["u"])
 

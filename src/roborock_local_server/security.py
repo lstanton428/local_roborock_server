@@ -10,6 +10,9 @@ import json
 import secrets
 import time
 
+_ADMIN_SESSION_KEY_CONTEXT = b"rrls/admin-session/v1"
+_PROTOCOL_SYNC_SECRET_CONTEXT = b"rrls/protocol-sync/v1"
+
 
 def _urlsafe_b64encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -47,6 +50,20 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def _derive_key(root_secret: str, context: bytes, binding: str = "") -> bytes:
+    message = context + b"\x00" + binding.encode("utf-8")
+    return hmac.new(root_secret.encode("utf-8"), message, hashlib.sha256).digest()
+
+
+def derive_protocol_sync_secret(root_secret: str) -> str:
+    """Return the secret mitm_redirect.py presents to the protocol sync route.
+
+    It is derived from admin.session_secret so it can be shown and copied without
+    exposing the key that signs admin session cookies.
+    """
+    return _urlsafe_b64encode(_derive_key(root_secret, _PROTOCOL_SYNC_SECRET_CONTEXT))
+
+
 @dataclass(frozen=True)
 class SessionClaims:
     issued_at: int
@@ -56,8 +73,17 @@ class SessionClaims:
 class AdminSessionManager:
     """Stateless HMAC-signed admin session tokens."""
 
-    def __init__(self, *, secret: str, ttl_seconds: int, cookie_name: str = "rrls_admin") -> None:
-        self._secret = secret.encode("utf-8")
+    def __init__(
+        self,
+        *,
+        secret: str,
+        ttl_seconds: int,
+        cookie_name: str = "rrls_admin",
+        binding: str = "",
+    ) -> None:
+        # binding is normally the admin password hash, so changing the password
+        # invalidates every outstanding session cookie.
+        self._secret = _derive_key(secret, _ADMIN_SESSION_KEY_CONTEXT, binding)
         self.ttl_seconds = ttl_seconds
         self.cookie_name = cookie_name
 

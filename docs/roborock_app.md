@@ -13,6 +13,8 @@ Use this after [Installation](installation.md) and [Onboarding](onboarding.md) i
 
 During the MITM login step, the script now needs to sync the captured protocol-auth session back to your server. Pass `admin.session_secret` from the active server config as `--sync-secret`. That sync callback always uses the `--local-api` host and port.
 
+The app login and that sync callback are new connections, so the server refuses them once the new-connections window has closed (30 minutes after startup by default). Right before the MITM login, open **New Connections** in the admin dashboard, tick the box and select **Save** to open a fresh window.
+
 The launcher can auto-load a sync secret from `config.toml` beside `mitm_redirect.py`, but that is only correct when that file matches the config used by the running server. If you run the MITM step from a second machine, or your server is using a generated Home Assistant config or another config file, pass `--sync-secret` explicitly.
 
 The launcher now preflights that callback before starting `mitmweb`. If the `--local-api` host cannot be reached, if the TLS certificate does not validate for that host, or if the sync secret is rejected, the script exits immediately instead of letting you proceed into a broken login flow.

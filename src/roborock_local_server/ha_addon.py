@@ -178,6 +178,21 @@ def _load_existing_admin_session_secret(config_path: Path) -> str:
     return secret if len(secret) >= 24 else ""
 
 
+def _load_existing_new_connections_enabled(config_path: Path) -> bool:
+    """Keep an admin's dashboard choice across restarts; new installs default to on."""
+    if not config_path.exists():
+        return True
+    try:
+        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return True
+    admin = parsed.get("admin")
+    if not isinstance(admin, dict):
+        return True
+    value = admin.get("new_connections_enabled")
+    return value if isinstance(value, bool) else True
+
+
 def _render_config_toml(
     *,
     options: dict[str, Any],
@@ -259,7 +274,7 @@ def _render_config_toml(
     # The Home Assistant add-on no longer exposes this toggle.
     # Keep protocol auth enabled even if a stale stored option is present.
     protocol_auth_enabled = True
-    new_connections_enabled = True
+    new_connections_enabled = _load_existing_new_connections_enabled(config_path)
     new_connections_window_minutes = _as_window_minutes(merged.get("new_connections_window_minutes", 30))
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
     protocol_login_pin = _require_pin(merged.get("protocol_login_pin"), field_name="protocol_login_pin")

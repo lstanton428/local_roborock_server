@@ -14,7 +14,7 @@ from urllib.parse import parse_qs
 
 from roborock_local_server.log_retention import iter_log_lines
 
-from .data_helpers import utcnow_iso
+from .data_helpers import secret_equals, utcnow_iso
 
 
 # Anchored to setup_file_logger's "<asctime> [<level>] <message>" format so text
@@ -655,7 +655,7 @@ class RuntimeCredentialsStore:
                 stored_password = _clean_str(device.get("device_mqtt_pass"))
                 if not stored_password:
                     return False, "device_mqtt_password_missing", dict(device)
-                if stored_password == normalized_password:
+                if secret_equals(normalized_password, stored_password):
                     return True, "device_mqtt_user", dict(device)
                 return False, "invalid_device_mqtt_password", dict(device)
         return False, "unknown_device_mqtt_username", None
@@ -700,7 +700,7 @@ class RuntimeCredentialsStore:
             existing_password = _clean_str(device.get("device_mqtt_pass"))
             if existing_username and existing_username != normalized_username:
                 return None
-            if existing_password and existing_password != normalized_password:
+            if existing_password and not secret_equals(normalized_password, existing_password):
                 return None
             changed = False
             if existing_username != normalized_username:

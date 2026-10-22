@@ -14,6 +14,7 @@ import threading
 from typing import Any, Callable
 
 from shared.constants import MQTT_TYPES
+from shared.data_helpers import secret_equals
 from shared.decoder import build_decoder
 from shared.io_utils import append_jsonl, payload_preview
 from shared.protocol_auth import ProtocolAuthStore
@@ -266,7 +267,7 @@ class MqttTlsProxy:
         bootstrap_credentials = self._expected_bootstrap_credentials()
         if bootstrap_credentials is not None:
             expected_username, expected_password, expected_client_id = bootstrap_credentials
-            if username == expected_username and password == expected_password:
+            if secret_equals(username, expected_username) and secret_equals(password, expected_password):
                 if expected_client_id and client_id and client_id != expected_client_id:
                     return False, "invalid_bootstrap_client_id", info, None
                 return True, "bootstrap", info, None

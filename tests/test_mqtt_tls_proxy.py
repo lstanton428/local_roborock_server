@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 import socket
@@ -262,7 +263,7 @@ def test_authorize_connect_accepts_native_user_hash_credentials(tmp_path) -> Non
     assert info["client_id"] == "ha-client"
 
 
-def test_authorize_connect_accepts_bootstrap_credentials_and_rejects_wrong_password(tmp_path) -> None:
+def test_authorize_connect_accepts_bootstrap_credentials_and_rejects_wrong_password(tmp_path, monkeypatch) -> None:
     cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
     _seed_cloud_snapshot(cloud_snapshot_path)
     runtime_credentials_path = tmp_path / "runtime_credentials.json"
@@ -292,6 +293,14 @@ def test_authorize_connect_accepts_bootstrap_credentials_and_rejects_wrong_passw
         cloud_snapshot_path=cloud_snapshot_path,
         runtime_credentials=runtime_credentials,
     )
+    compare_calls: list[tuple[object, object]] = []
+    original_compare_digest = hmac.compare_digest
+
+    def _counting_compare_digest(a, b):
+        compare_calls.append((a, b))
+        return original_compare_digest(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", _counting_compare_digest)
 
     bootstrap_packet = _build_connect_packet(
         client_id="bootstrap-client",
@@ -310,6 +319,8 @@ def test_authorize_connect_accepts_bootstrap_credentials_and_rejects_wrong_passw
     rejected, reject_reason, _info = proxy._authorize_connect_packet(wrong_password_packet)
     assert rejected is False
     assert reject_reason == "invalid_mqtt_credentials"
+    # Bootstrap credentials are compared with hmac.compare_digest, not ==.
+    assert (b"bootstrap-pass", b"bootstrap-pass") in compare_calls
 
 
 def test_authorize_connect_accepts_known_device_mqtt_user(tmp_path) -> None:

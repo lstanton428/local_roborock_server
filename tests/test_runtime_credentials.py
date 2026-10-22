@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -363,3 +364,69 @@ def test_ensure_device_model_fallback_adopts_record_without_did(tmp_path: Path) 
     assert adopted["duid"] == "cloud-q7-a"
     assert adopted["localkey"] == "local-key-a"
     assert len(store.devices()) == 1
+
+
+def test_device_mqtt_password_checks_use_constant_time_comparison(tmp_path: Path, monkeypatch) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    credentials_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "devices": [
+                    {
+                        "did": "1103821560705",
+                        "duid": "cloud-q7-a",
+                        "device_mqtt_usr": "c25b14ceac358d2a",
+                        "device_mqtt_pass": "ff8922d24a9a9af81f18f35dcee9a5a5",
+                    },
+                    {
+                        "did": "1103821560706",
+                        "duid": "cloud-q7-b",
+                        "device_mqtt_usr": "dd211305e2d4873b",
+                        "device_mqtt_pass": "",
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = RuntimeCredentialsStore(credentials_path)
+    compare_calls: list[tuple[object, object]] = []
+    original_compare_digest = hmac.compare_digest
+
+    def _counting_compare_digest(a, b):
+        compare_calls.append((a, b))
+        return original_compare_digest(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", _counting_compare_digest)
+
+    def _verify(username: str, password: str) -> tuple[bool, str]:
+        authorized, reason, _device = store.verify_device_mqtt_credentials(username=username, password=password)
+        return authorized, reason
+
+    assert _verify("c25b14ceac358d2a", " ff8922d24a9a9af81f18f35dcee9a5a5 ") == (True, "device_mqtt_user")
+    assert _verify("c25b14ceac358d2a", "ff8922d24a9a9af81f18f35dcee9a5a6") == (False, "invalid_device_mqtt_password")
+    assert _verify("c25b14ceac358d2a", "p\u00e4ss") == (False, "invalid_device_mqtt_password")
+    assert _verify("c25b14ceac358d2a", "") == (False, "missing_mqtt_credentials")
+    assert _verify("dd211305e2d4873b", "anything") == (False, "device_mqtt_password_missing")
+    assert _verify("unknown-user", "anything") == (False, "unknown_device_mqtt_username")
+    assert compare_calls, "device MQTT password comparison must use hmac.compare_digest"
+
+    compare_calls.clear()
+    assert (
+        store.confirm_device_mqtt_credentials(
+            did="1103821560705",
+            username="c25b14ceac358d2a",
+            password="wrong-password",
+        )
+        is None
+    )
+    confirmed = store.confirm_device_mqtt_credentials(
+        did="1103821560705",
+        username="c25b14ceac358d2a",
+        password="ff8922d24a9a9af81f18f35dcee9a5a5",
+    )
+    assert confirmed is not None
+    assert confirmed["device_mqtt_pass"] == "ff8922d24a9a9af81f18f35dcee9a5a5"
+    assert compare_calls, "onboarding password confirmation must use hmac.compare_digest"

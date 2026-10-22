@@ -12,6 +12,9 @@ import time
 
 _ADMIN_SESSION_KEY_CONTEXT = b"rrls/admin-session/v1"
 _PROTOCOL_SYNC_SECRET_CONTEXT = b"rrls/protocol-sync/v1"
+# A stored hash outside this range is corrupt or hostile; refuse it rather than
+# raise (0 or negative) or tie up a worker for minutes (huge counts).
+_MAX_PBKDF2_ITERATIONS = 10_000_000
 
 
 def _urlsafe_b64encode(data: bytes) -> str:
@@ -45,6 +48,8 @@ def verify_password(password: str, stored_hash: str) -> bool:
         salt = _urlsafe_b64decode(raw_salt)
         expected = _urlsafe_b64decode(raw_digest)
     except Exception:
+        return False
+    if not 1 <= iterations <= _MAX_PBKDF2_ITERATIONS:
         return False
     actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(actual, expected)

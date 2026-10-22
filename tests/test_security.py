@@ -1,3 +1,6 @@
+import pytest
+
+from roborock_local_server import security
 from roborock_local_server.security import (
     AdminSessionManager,
     derive_protocol_sync_secret,
@@ -21,7 +24,6 @@ def test_admin_session_verification_rejects_tampering() -> None:
     assert manager.verify(token + "tampered") is None
 
 
-
 def test_admin_session_binding_invalidates_cookies() -> None:
     secret = "abcdefghijklmnopqrstuvwxyz123456"
     original = AdminSessionManager(secret=secret, ttl_seconds=3600, binding="old-password-hash")
@@ -40,3 +42,13 @@ def test_protocol_sync_secret_cannot_sign_admin_sessions() -> None:
     forged = AdminSessionManager(secret=sync_secret, ttl_seconds=3600).issue()
     assert manager.verify(forged) is None
 
+
+@pytest.mark.parametrize("iterations", ["0", "-1", "10000001", str(2**63)])
+def test_verify_password_rejects_out_of_range_iterations(iterations: str, monkeypatch) -> None:
+    _scheme, _iterations, salt, digest = hash_password("secret", iterations=1).split("$")
+
+    def _no_hashing(*args, **kwargs):
+        raise AssertionError("an out-of-range iteration count must be refused before hashing")
+
+    monkeypatch.setattr(security.hashlib, "pbkdf2_hmac", _no_hashing)
+    assert verify_password("secret", f"pbkdf2_sha256${iterations}${salt}${digest}") is False

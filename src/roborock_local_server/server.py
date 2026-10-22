@@ -1349,6 +1349,18 @@ class ReleaseSupervisor:
             )
             return response
 
+        if self._is_onboarding_nc_prepare_path(clean_path):
+            # Flag a second vacuum before /nc can match its did to an existing device record.
+            try:
+                self.runtime_state.observe_onboarding_request(
+                    event_time=str(entry["time"]),
+                    route_name="nc_prepare",
+                    clean_path=clean_path,
+                    remote=str(entry["remote"]),
+                    did=explicit_did or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("runtime_state observe_onboarding_request failed: %s", exc)
         route_name, response_payload = resolve_route(
             rules=self.endpoint_rules,
             context=self.context,

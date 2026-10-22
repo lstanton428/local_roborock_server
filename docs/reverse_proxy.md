@@ -134,7 +134,7 @@ trusted_proxies = ["10.42.0.0/16", "10.1.1.10"]
 ```
 
 - **HTTP:** requests from a trusted proxy use the `X-Forwarded-For` header to find the vacuum's real IP. The header is ignored from any other client, so it can't be spoofed. Traefik and Caddy set it by default; nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
-- **MQTT:** during an active onboarding session, a new MQTT login is normally accepted only from the IP that completed `/region` and `/nc`. A connection from a trusted proxy is also accepted, because a stream proxy hides the vacuum's address. The session must still have completed `/region` and `/nc`, and the first publish must be on that vacuum's topic.
+- **MQTT:** during an active onboarding session, a new MQTT login is normally accepted only from the IP that completed `/region` and `/nc`. `/region` and `/nc` requests from a second IP in the same session are reported as an identity conflict, so the HTTP side must see the vacuum's real address or a single proxy address consistently. A connection from a trusted proxy is also accepted, because a stream proxy hides the vacuum's address. The session must still have completed `/region` and `/nc`, and the first publish must be on that vacuum's topic.
 
 > Only list addresses that are actually proxies. Any client that connects from a trusted address during onboarding can claim the vacuum being onboarded. Keep onboarding windows short, and turn off new connections when you are not adding a device.
 

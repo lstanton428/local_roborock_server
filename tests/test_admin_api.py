@@ -1573,3 +1573,43 @@ def test_execute_scene_hydrates_missing_zone_ranges_from_mqtt(tmp_path: Path) ->
     persisted_outer = json.loads(scene["param"])
     persisted_step = json.loads(persisted_outer["action"]["items"][0]["param"])
     assert persisted_step["params"]["data"][0]["zones"][0]["range"] == [32800, 22750, 34550, 25350]
+
+
+def test_onboarding_nc_from_second_vacuum_does_not_adopt_selected_record_by_model(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.inventory_path.write_text(
+        json.dumps(
+            {
+                "devices": [
+                    {
+                        "duid": "cloud-q7-a",
+                        "name": "Q7 Upstairs",
+                        "model": "roborock.vacuum.sc05",
+                        "product_id": "product-q7-a",
+                        "local_key": "local-key-a",
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    supervisor.runtime_state.start_onboarding_session(target_duid="cloud-q7-a", target_name="Q7 Upstairs")
+
+    vacuum = TestClient(supervisor.app, client=("192.168.8.10", 50000))
+    assert vacuum.get("/region?a=1").status_code == 200
+
+    other = TestClient(supervisor.app, client=("192.168.8.66", 50000))
+    response = other.get("/nc?did=1103821560999&pid=roborock.vacuum.sc05")
+    assert response.status_code == 200
+    assert "local-key-a" not in response.text
+
+    snapshot = supervisor.runtime_state.onboarding_session_snapshot()
+    assert "192.168.8.66" in snapshot["identity_conflict"]
+    record = supervisor.runtime_credentials.resolve_device(duid="cloud-q7-a")
+    assert record["did"] == ""
+    assert record["localkey"] == "local-key-a"

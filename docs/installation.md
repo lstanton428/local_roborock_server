@@ -145,6 +145,8 @@ Use [Home Assistant](home_assistant.md) as the installation guide if you want to
 
 ## After The Stack Starts
 
+New connections (Home Assistant or app logins, onboarding, and a vacuum's first connection) are allowed for 30 minutes after the server starts, then close on their own. Devices and apps that already connected keep working. To add something later, open **New Connections** in the admin dashboard, tick the box and select **Save** to open another 30-minute window; starting an onboarding session reopens it too. Change the length with `admin.new_connections_window_minutes` (`new_connections_window_minutes` in the add-on), or set it to `0` to leave new connections open until you turn them off.
+
 1. Open the admin dashboard at `https://api-roborock.example.com:555/admin` by default, or `https://api-roborock.example.com:YOUR_HTTPS_PORT/admin` if you chose a custom HTTPS port.
 
 2. If the page does not load, check the container and DNS before onboarding:

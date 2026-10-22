@@ -97,7 +97,8 @@ The Home Assistant Roborock integration includes a native configuration flow wit
 ### Prerequisites
 
 1. Ensure the local stack is running and has completed a cloud import snapshot from the same Roborock account used by your vacuum.
-2. (Optional but recommended) Confirm the local protocol login works from a shell on the Home Assistant host or another machine that can reach the stack:
+2. Make sure new connections are allowed. They close 30 minutes after the server starts; reopen them under **New Connections** in the admin dashboard before signing in.
+3. (Optional but recommended) Confirm the local protocol login works from a shell on the Home Assistant host or another machine that can reach the stack:
 
    ```bash
    curl -sk -X POST "https://api-roborock.example.com:555/api/v5/auth/email/login/code" \

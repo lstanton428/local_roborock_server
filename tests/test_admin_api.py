@@ -1573,3 +1573,60 @@ def test_execute_scene_hydrates_missing_zone_ranges_from_mqtt(tmp_path: Path) ->
     persisted_outer = json.loads(scene["param"])
     persisted_step = json.loads(persisted_outer["action"]["items"][0]["param"])
     assert persisted_step["params"]["data"][0]["zones"][0]["range"] == [32800, 22750, 34550, 25350]
+
+
+def test_new_connections_close_when_the_window_expires(tmp_path: Path, monkeypatch) -> None:
+    from roborock_local_server import server as server_module
+
+    now = {"value": 1000.0}
+    monkeypatch.setattr(server_module.time, "monotonic", lambda: now["value"])
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app)
+    assert client.post("/admin/api/login", json={"password": "correct horse battery staple"}).status_code == 200
+
+    assert supervisor.new_connections_enabled() is True
+    assert client.get("/admin/api/auth").json()["new_connections_seconds_remaining"] == 30 * 60
+
+    now["value"] += 30 * 60
+    assert supervisor.new_connections_enabled() is False
+    blocked = client.post("/api/v5/auth/email/login/code", json={"email": "user@example.com", "code": "123456"})
+    assert blocked.status_code == 403
+    assert blocked.json()["msg"] == "new_connections_disabled"
+    assert client.get("/admin/api/auth").json()["new_connections_seconds_remaining"] is None
+
+    reopened = client.post("/admin/api/auth", json={"new_connections_enabled": True})
+    assert reopened.status_code == 200
+    assert reopened.json()["new_connections_enabled"] is True
+    assert supervisor.new_connections_enabled() is True
+
+
+def test_new_connections_window_zero_never_expires(tmp_path: Path, monkeypatch) -> None:
+    from roborock_local_server import server as server_module
+
+    now = {"value": 1000.0}
+    monkeypatch.setattr(server_module.time, "monotonic", lambda: now["value"])
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    config = replace(config, admin=replace(config.admin, new_connections_window_minutes=0))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    now["value"] += 10 * 24 * 3600
+    assert supervisor.new_connections_enabled() is True
+    assert supervisor.new_connections_seconds_remaining() is None
+
+
+def test_starting_onboarding_reopens_an_expired_window(tmp_path: Path, monkeypatch) -> None:
+    from roborock_local_server import server as server_module
+
+    now = {"value": 1000.0}
+    monkeypatch.setattr(server_module.time, "monotonic", lambda: now["value"])
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    now["value"] += 31 * 60
+    assert supervisor.new_connections_enabled() is False
+    supervisor.start_onboarding_session(new_vacuum=True)
+    assert supervisor.new_connections_enabled() is True

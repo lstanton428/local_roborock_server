@@ -276,6 +276,7 @@ def test_write_config_from_home_assistant_options_cloudflare(tmp_path: Path) -> 
     assert parsed["tls"]["base_domain"] == "example.com"
     assert parsed["tls"]["email"] == "acme@example.com"
     assert parsed["tls"]["acme_server"] == "zerossl"
+    assert parsed["admin"]["new_connections_window_minutes"] == 30
     assert parsed["tls"]["cloudflare_token_file"] == str(token_path)
     assert token_path.read_text(encoding="utf-8") == "cloudflare-token-123"
 

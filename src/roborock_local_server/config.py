@@ -85,6 +85,9 @@ class AdminConfig:
     new_connections_enabled: bool
     protocol_login_email: str
     protocol_login_pin_hash: str
+    # Minutes new connections stay allowed after startup or after an admin
+    # turns them on; 0 keeps them allowed until turned off.
+    new_connections_window_minutes: int = 30
 
 
 @dataclass(frozen=True)
@@ -358,6 +361,11 @@ def load_config(path: str | Path) -> AppConfig:
                 admin.get("protocol_login_pin_hash"),
                 "admin.protocol_login_pin_hash",
             ),
+            new_connections_window_minutes=_as_int(
+                admin.get("new_connections_window_minutes"),
+                "admin.new_connections_window_minutes",
+                30,
+            ),
         ),
         turn=TurnConfig(
             mode=turn_mode,
@@ -370,6 +378,8 @@ def load_config(path: str | Path) -> AppConfig:
         ),
     )
 
+    if config.admin.new_connections_window_minutes < 0:
+        raise ValueError("admin.new_connections_window_minutes must be 0 or greater")
     if len(config.admin.session_secret) < 24:
         raise ValueError("admin.session_secret must be at least 24 characters")
     if "@" not in config.admin.protocol_login_email:

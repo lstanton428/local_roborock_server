@@ -1,3 +1,4 @@
+import base64
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -12,6 +13,11 @@ from roborock_local_server.config import TurnConfig
 from roborock_local_server.server import ReleaseSupervisor, resolve_route
 from shared.constants import DEFAULT_PRODUCT_SCHEMA
 from shared.protocol_auth import ProtocolAuthStore, build_hawk_authorization
+
+# Key recovery only keeps RSA-sized signatures (128/256/512 bytes).
+RSA2048_SIGNATURE_A = base64.b64encode(b"\x01" * 256).decode("ascii")
+RSA2048_SIGNATURE_B = base64.b64encode(b"\x02" * 256).decode("ascii")
+RSA4096_SIGNATURE = base64.b64encode(b"\x03" * 512).decode("ascii")
 
 
 def test_camera_bootstrap_preserves_firmware_contract_and_redacts_persisted_password(tmp_path):
@@ -624,20 +630,20 @@ def test_onboarding_signed_query_fallback_uses_active_target_and_triggers_recove
     monkeypatch.setattr(key_cache, "maybe_recover_async", lambda did: recovery_calls.append(did))
 
     client = TestClient(supervisor.app)
-    region = client.get("/region?a=1&signature=QUJD")
+    region = client.get(f"/region?a=1&signature={RSA2048_SIGNATURE_A}")
     assert region.status_code == 200
 
     key_state = json.loads(paths.device_key_state_path.read_text(encoding="utf-8"))
     samples = key_state["devices"]["1103821560705"]["samples"]
-    assert samples == [{"canonical": "a=1", "signature_b64": "QUJD"}]
+    assert samples == [{"canonical": "a=1", "signature_b64": RSA2048_SIGNATURE_A}]
     assert recovery_calls == ["1103821560705"]
 
-    login_sign = client.post("/api/v3/key/sign?s=abc&signature=REVG")
+    login_sign = client.post(f"/api/v3/key/sign?s=abc&signature={RSA2048_SIGNATURE_B}")
     assert login_sign.status_code == 200
 
     key_state = json.loads(paths.device_key_state_path.read_text(encoding="utf-8"))
     samples = key_state["devices"]["1103821560705"]["samples"]
-    assert samples == [{"canonical": "a=1", "signature_b64": "QUJD"}]
+    assert samples == [{"canonical": "a=1", "signature_b64": RSA2048_SIGNATURE_A}]
     assert recovery_calls == ["1103821560705"]
 
 
@@ -693,7 +699,7 @@ def test_region_v2_request_keeps_onboarding_in_progress(tmp_path: Path) -> None:
     client = TestClient(supervisor.app)
     region = client.get(
         "/region?did=1103821560705&pid=roborock.vacuum.a279",
-        headers={"v": "v2", "s": "QUJD", "n": "nonce-a", "t": "1234567890"},
+        headers={"v": "v2", "s": RSA4096_SIGNATURE, "n": "nonce-a", "t": "1234567890"},
     )
     assert region.status_code == 200
 
@@ -706,9 +712,9 @@ def test_region_v2_request_keeps_onboarding_in_progress(tmp_path: Path) -> None:
             "query": "did=1103821560705&pid=roborock.vacuum.a279",
             "nonce": "nonce-a",
             "ts": "1234567890",
-            "signature_b64": "QUJD",
+            "signature_b64": RSA4096_SIGNATURE,
             "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "signature_len": "3",
+            "signature_len": "512",
             "version": "v2",
         }
     ]

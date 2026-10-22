@@ -139,6 +139,26 @@ If your model already has certificate notes on the tested-vacuums page, follow t
 
    For reverse proxy setups, keep `network.https_port` and `network.mqtt_tls_port` set to the backend listener ports and use `network.advertised_https_port` / `network.advertised_mqtt_tls_port` for the public ports.
 
+### Container Hardening
+
+`compose.yaml` starts the container with `no-new-privileges` and drops every Linux capability except the few the stack uses:
+
+- `SETUID` and `SETGID`: the embedded Mosquitto starts as root and switches to its own user.
+- `KILL`: the server stops that Mosquitto process, which runs under a different UID.
+- `DAC_OVERRIDE`: root in the container can still read and write `./data`, `./config.toml` and `./secrets` when your host user owns them.
+- `NET_BIND_SERVICE`: binding ports below 1024 (`555`, `443`) when Docker's unprivileged-port setting does not apply, for example with `network_mode: host`.
+
+If you copy these settings into your own compose file and the stack fails to start, check `docker compose logs` for `Operation not permitted` or `Permission denied`.
+
+The image still runs as root, so existing `data/` directories keep working without changes. To run it as an unprivileged user instead, first give that user ownership of the mounted files:
+
+```bash
+docker compose down
+sudo chown -R 1000:1000 data secrets config.toml
+```
+
+Then, in `compose.yaml`, add `user: "1000:1000"` and remove the `cap_add` list (keep `cap_drop: [ALL]`). In this mode Mosquitto and coturn run as the same user. coturn logs that it cannot open its SQLite database or `/var/run/turnserver.pid`. You can ignore that, because provided TURN mode sets its user in the config file. With `network_mode: host`, the HTTPS and MQTT ports must be 1024 or higher. Cloudflare ACME renewal has not been tested as a non-root user. If you switch back to root later, `data/` stays usable.
+
 ## Method 2: Home Assistant Add-on
 
 Use [Home Assistant](home_assistant.md) as the installation guide if you want to run the stack as a Home Assistant add-on instead of Docker Compose.

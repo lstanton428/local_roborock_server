@@ -15,6 +15,7 @@ import secrets
 import signal
 import socket
 import threading
+import time
 from typing import Any
 import re
 from urllib.parse import parse_qs, urlencode
@@ -460,6 +461,8 @@ class ReleaseSupervisor:
         # Serializes password checks: bounds hashing CPU and makes throttle
         # decisions see every earlier failure.
         self.login_check_lock = asyncio.Lock()
+        self._new_connections_deadline: float | None = None
+        self._open_new_connections_window()
         self.cloud_manager = CloudImportManager(
             inventory_path=self.paths.inventory_path,
             snapshot_path=self.paths.cloud_snapshot_path,
@@ -650,7 +653,23 @@ class ReleaseSupervisor:
         return bool(self.config.admin.protocol_auth_enabled)
 
     def new_connections_enabled(self) -> bool:
-        return bool(self.config.admin.new_connections_enabled)
+        if not self.config.admin.new_connections_enabled:
+            return False
+        if self._new_connections_deadline is None:
+            return True
+        return time.monotonic() < self._new_connections_deadline
+
+    def _open_new_connections_window(self) -> None:
+        window_minutes = self.config.admin.new_connections_window_minutes
+        self._new_connections_deadline = (
+            time.monotonic() + window_minutes * 60 if window_minutes > 0 else None
+        )
+
+    def new_connections_seconds_remaining(self) -> int | None:
+        """Seconds until new connections close, or None when they do not expire."""
+        if not self.new_connections_enabled() or self._new_connections_deadline is None:
+            return None
+        return max(0, math.ceil(self._new_connections_deadline - time.monotonic()))
 
     def _protocol_login_email(self) -> str:
         return str(self.config.admin.protocol_login_email or "").strip()
@@ -1643,6 +1662,8 @@ class ReleaseSupervisor:
         return {
             "protocol_auth_enabled": self.protocol_auth_enabled(),
             "new_connections_enabled": self.new_connections_enabled(),
+            "new_connections_seconds_remaining": self.new_connections_seconds_remaining(),
+            "new_connections_window_minutes": self.config.admin.new_connections_window_minutes,
             "protocol_sync_secret": derive_protocol_sync_secret(self.config.admin.session_secret),
             "protocol_sessions": sessions,
             "protocol_session_count": len(sessions),
@@ -1701,6 +1722,8 @@ class ReleaseSupervisor:
         normalized_enabled = bool(enabled)
         self._rewrite_admin_bool_setting(key="new_connections_enabled", value=normalized_enabled)
         self.config = load_config(self.paths.config_file)
+        if normalized_enabled:
+            self._open_new_connections_window()
         return self._auth_payload()
 
     def remove_protocol_session(self, *, hawk_id: str, hawk_session: str) -> bool:
@@ -1714,8 +1737,10 @@ class ReleaseSupervisor:
         name: str = "",
         model: str = "",
     ) -> dict[str, Any]:
-        if not self.new_connections_enabled():
+        if not self.config.admin.new_connections_enabled:
             raise ValueError("New connections are disabled.")
+        # An admin asking to pair a vacuum reopens a window that timed out.
+        self._open_new_connections_window()
         if new_vacuum:
             # Blind session for a vacuum that has never been on the cloud and therefore
             # has no inventory entry to select. The session adopts the did/duid from the

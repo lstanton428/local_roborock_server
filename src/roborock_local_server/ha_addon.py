@@ -38,6 +38,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "admin_password": "",
     "protocol_login_email": "",
     "protocol_login_pin": "",
+    "new_connections_window_minutes": 30,
     "turn_mode": "disabled",
     "turn_host": "",
     "turn_port": 3478,
@@ -130,6 +131,16 @@ def _require_email(value: object, *, field_name: str) -> str:
     if "@" not in text:
         raise ValueError(f"{field_name} must be an email address")
     return text
+
+
+def _as_window_minutes(value: object) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("new_connections_window_minutes must be a whole number of minutes") from exc
+    if minutes < 0:
+        raise ValueError("new_connections_window_minutes must be 0 or greater")
+    return minutes
 
 
 def _require_pin(value: object, *, field_name: str) -> str:
@@ -264,6 +275,7 @@ def _render_config_toml(
     # Keep protocol auth enabled even if a stale stored option is present.
     protocol_auth_enabled = True
     new_connections_enabled = True
+    new_connections_window_minutes = _as_window_minutes(merged.get("new_connections_window_minutes", 30))
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
     protocol_login_pin = _require_pin(merged.get("protocol_login_pin"), field_name="protocol_login_pin")
 
@@ -377,6 +389,7 @@ def _render_config_toml(
             "session_ttl_seconds = 86400",
             f"protocol_auth_enabled = {_toml_bool(protocol_auth_enabled)}",
             f"new_connections_enabled = {_toml_bool(new_connections_enabled)}",
+            f"new_connections_window_minutes = {new_connections_window_minutes}",
             f"protocol_login_email = {_toml_string(protocol_login_email)}",
             f"protocol_login_pin_hash = {_toml_string(protocol_login_pin_hash)}",
             "",

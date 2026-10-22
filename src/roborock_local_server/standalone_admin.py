@@ -159,8 +159,16 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
         function renderAuth(auth) {{
           const enabled = Boolean(auth.new_connections_enabled);
           document.getElementById("newConnectionsEnabled").checked = enabled;
+          const remaining = auth.new_connections_seconds_remaining;
+          let connectionState = "Blocked";
+          if (enabled && remaining === null) {{
+            connectionState = "Allowed until turned off";
+          }} else if (enabled) {{
+            const closesAt = new Date(Date.now() + Number(remaining) * 1000);
+            connectionState = `Allowed until ${{closesAt.toLocaleTimeString()}} (closes automatically; Save again to reopen)`;
+          }}
           document.getElementById("authMeta").textContent =
-            `New connections: ${{enabled ? "Allowed" : "Blocked"}}. Persisted sessions: ${{Number(auth.protocol_session_count || 0)}}.`;
+            `New connections: ${{connectionState}}. Persisted sessions: ${{Number(auth.protocol_session_count || 0)}}.`;
           const sessionSecret = String(auth.protocol_sync_secret || "");
           document.getElementById("adminSessionSecret").value = sessionSecret;
           document.getElementById("syncSecretMeta").textContent = sessionSecret

@@ -73,6 +73,10 @@ from .security import AdminSessionManager, LoginThrottle, derive_protocol_sync_s
 ALL_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
 PROTOCOL_AUTH_SYNC_PATH = "/internal/protocol/user-data"
 PROTOCOL_AUTH_SYNC_SECRET_HEADER = "x-local-sync-secret"
+# Firmware, app and admin requests are a few KB; reject anything near this before routing.
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
+# Larger bodies are traced by length and sha256 only.
+MAX_TRACED_BODY_BYTES = 4096
 _REGION_COUNTRY_CODE = {
     "US": "1",
     "CN": "86",
@@ -383,6 +387,66 @@ def _extract_explicit_model(
 def _connectivity_check(host: str, port: int) -> None:
     with socket.create_connection((host, port), timeout=3):
         return
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Answer 413 when a request body exceeds ``max_body_bytes``.
+
+    Checks Content-Length up front and counts streamed (e.g. chunked) bytes,
+    so the app never buffers more than the limit.
+    """
+
+    def __init__(self, app: Any, *, max_body_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        for name, value in scope.get("headers") or []:
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    break
+                if declared > self.max_body_bytes:
+                    await self._reject(scope, receive, send)
+                    return
+                break
+
+        received = 0
+        response_started = False
+
+        async def limited_receive() -> dict[str, Any]:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        async def tracking_send(message: dict[str, Any]) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _RequestBodyTooLarge:
+            if response_started:
+                raise
+            await self._reject(scope, receive, send)
+
+    async def _reject(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        response = JSONResponse({"error": "Request body too large"}, status_code=413)
+        await response(scope, receive, send)
 
 
 class ManagedFastApiServer:
@@ -1351,11 +1415,14 @@ class ReleaseSupervisor:
             entry["did"] = explicit_did
         if explicit_pid:
             entry["pid"] = explicit_pid
+        trace_body = not is_protocol_sync_request and len(raw_body) <= MAX_TRACED_BODY_BYTES
         if is_protocol_sync_request:
             entry["body_redacted"] = True
+        elif not trace_body:
+            entry["body_omitted"] = True
         else:
             entry["body_b64"] = base64.b64encode(raw_body).decode("ascii")
-        if body_text and not is_protocol_sync_request:
+        if body_text and trace_body:
             entry["body_text"] = body_text
             try:
                 entry["body_json"] = json.loads(body_text)
@@ -2180,6 +2247,7 @@ class ReleaseSupervisor:
             is_trusted_proxy=self._is_trusted_proxy,
         )
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=list(self.config.network.trusted_proxies))
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=MAX_REQUEST_BODY_BYTES)
         # Outermost, so the guard can tell which peer actually sent forwarding headers.
         app.add_middleware(PeerClientRecorder)
         if self.enable_standalone_admin:

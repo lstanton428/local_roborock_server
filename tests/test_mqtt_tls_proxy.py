@@ -1,11 +1,16 @@
 import json
 import logging
 import socket
+import ssl
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 import pytest
 
 from roborock_local_server.backend import MqttTlsProxy
@@ -19,6 +24,10 @@ class _FakeSourceSocket:
         self.sent: list[bytes] = []
         self.closed = False
         self.recv_calls = 0
+        self.timeouts: list[float | None] = []
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeouts.append(value)
 
     def recv(self, _size: int) -> bytes:
         self.recv_calls += 1
@@ -889,6 +898,8 @@ def test_handle_client_traces_packets_already_buffered_before_relay(tmp_path, mo
         ("1", "c2b", connect_packet),
         ("1", "c2b", b"\xc0\x00"),
     ]
+    # CONNECT is read under a deadline that is cleared before the relay starts.
+    assert tls_conn.timeouts == [MqttTlsProxy._CONNECT_TIMEOUT_SECONDS, None]
 
 
 def test_handle_client_closes_tls_conn_when_client_closes_before_connect(tmp_path) -> None:
@@ -1103,3 +1114,143 @@ def test_onboarding_candidate_from_trusted_proxy_still_requires_region_and_nc(tm
     assert authorized is False
     assert reason == "invalid_mqtt_credentials"
     assert candidate is None
+
+
+def _write_self_signed_cert(tmp_path: Path) -> tuple[Path, Path]:
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mqtt.test")])
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(private_key=private_key, algorithm=hashes.SHA256())
+    )
+    cert_file = tmp_path / "fullchain.pem"
+    key_file = tmp_path / "privkey.pem"
+    cert_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return cert_file, key_file
+
+
+def _start_listening_proxy(tmp_path: Path, *, tls_enabled: bool) -> tuple[MqttTlsProxy, int]:
+    cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
+    _seed_cloud_snapshot(cloud_snapshot_path)
+    cert_file, key_file = _write_self_signed_cert(tmp_path) if tls_enabled else (None, None)
+    proxy = MqttTlsProxy(
+        cert_file=cert_file,
+        key_file=key_file,
+        listen_host="127.0.0.1",
+        listen_port=0,
+        backend_host="127.0.0.1",
+        backend_port=1,
+        localkey="test-local-key",
+        logger=logging.getLogger("test.mqtt_tls_proxy"),
+        decoded_jsonl=tmp_path / "decoded.jsonl",
+        cloud_snapshot_path=cloud_snapshot_path,
+        tls_enabled=tls_enabled,
+    )
+    proxy.start()
+    deadline = time.monotonic() + 5.0
+    while not proxy._running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert proxy._server_socket is not None
+    return proxy, proxy._server_socket.getsockname()[1]
+
+
+def _rejected_connect_round_trip(port: int, *, tls_enabled: bool) -> bytes:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    try:
+        if tls_enabled:
+            client_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            client_ctx.check_hostname = False
+            client_ctx.verify_mode = ssl.CERT_NONE
+            sock = client_ctx.wrap_socket(sock, server_hostname="mqtt.test")
+        sock.sendall(_build_connect_packet(client_id="c", username="unknown-user", password="unknown-pass"))
+        return sock.recv(16)
+    finally:
+        sock.close()
+
+
+def _wait_for_server_close(sock: socket.socket) -> bool:
+    sock.settimeout(5.0)
+    try:
+        return sock.recv(16) == b""
+    except ConnectionResetError:
+        return True
+    except socket.timeout:
+        return False
+
+
+def test_silent_client_does_not_block_other_clients_tls_handshake(tmp_path) -> None:
+    proxy, port = _start_listening_proxy(tmp_path, tls_enabled=True)
+    silent = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    try:
+        time.sleep(0.2)
+
+        assert _rejected_connect_round_trip(port, tls_enabled=True) == b"\x20\x02\x00\x05"
+    finally:
+        silent.close()
+        proxy.stop()
+
+
+def test_silent_client_is_dropped_after_handshake_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(MqttTlsProxy, "_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+    proxy, port = _start_listening_proxy(tmp_path, tls_enabled=True)
+    silent = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    try:
+        assert _wait_for_server_close(silent) is True
+    finally:
+        silent.close()
+        proxy.stop()
+
+
+def test_plain_client_that_never_sends_connect_is_dropped(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(MqttTlsProxy, "_CONNECT_TIMEOUT_SECONDS", 0.3)
+    proxy, port = _start_listening_proxy(tmp_path, tls_enabled=False)
+    silent = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    try:
+        assert _wait_for_server_close(silent) is True
+        assert _rejected_connect_round_trip(port, tls_enabled=False) == b"\x20\x02\x00\x05"
+    finally:
+        silent.close()
+        proxy.stop()
+
+
+def test_connections_beyond_limit_are_closed_until_a_slot_frees(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(MqttTlsProxy, "_MAX_CLIENT_CONNECTIONS", 1)
+    proxy, port = _start_listening_proxy(tmp_path, tls_enabled=False)
+    holder = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+    try:
+        time.sleep(0.2)
+        extra = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+        try:
+            assert _wait_for_server_close(extra) is True
+        finally:
+            extra.close()
+
+        holder.close()
+        deadline = time.monotonic() + 5.0
+        response = b""
+        while time.monotonic() < deadline:
+            try:
+                response = _rejected_connect_round_trip(port, tls_enabled=False)
+            except OSError:
+                response = b""
+            if response:
+                break
+            time.sleep(0.05)
+        assert response == b"\x20\x02\x00\x05"
+    finally:
+        holder.close()
+        proxy.stop()

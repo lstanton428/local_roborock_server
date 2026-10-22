@@ -558,3 +558,25 @@ def test_token_and_user_mqtt_credentials_use_constant_time_comparison(tmp_path: 
     )
     assert store.verify_user_mqtt_credentials(mqtt_username, "")[:2] == (False, "invalid_mqtt_credentials")
     assert compare_calls, "MQTT password comparison must use hmac.compare_digest"
+
+
+def test_hawk_mac_with_non_ascii_value_is_rejected_not_raised(tmp_path: Path) -> None:
+    supervisor, paths = _build_supervisor(tmp_path)
+    TestClient(supervisor.app)
+    auth_store = ProtocolAuthStore(paths.cloud_snapshot_path)
+    user = auth_store.availability().user
+    assert user is not None
+    authorization = build_hawk_authorization(
+        user=user,
+        path="/user/inbox/latest",
+        timestamp=int(time.time()),
+        nonce="nonce-non-ascii-mac",
+    )
+    tampered = authorization.split('mac="', 1)[0] + 'mac="éé"'
+
+    assert auth_store.verify_hawk(
+        path="/user/inbox/latest",
+        query_params={},
+        body_params={},
+        headers={"authorization": tampered},
+    ) == (False, "invalid_hawk_mac")

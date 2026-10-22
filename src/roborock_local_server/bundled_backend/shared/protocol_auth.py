@@ -604,7 +604,7 @@ class ProtocolAuthStore:
             timestamp=timestamp,
             nonce=nonce,
         )
-        if not hmac.compare_digest(_clean_str(hawk.get("mac")), expected_mac):
+        if not secret_equals(_clean_str(hawk.get("mac")), expected_mac):
             return False, "invalid_hawk_mac"
 
         nonce_key = f"{user.hawk_id}:{user.hawk_session}:{timestamp}:{nonce}"

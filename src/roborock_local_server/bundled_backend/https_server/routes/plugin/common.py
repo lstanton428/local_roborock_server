@@ -116,7 +116,9 @@ APPPLUGIN_LIST = [
 
 def plugin_proxy_url(ctx: ServerContext, source_url: str) -> str:
     source = str(source_url or "").strip()
-    if not source:
+    # The proxy only serves canonical sources; hand anything else to the app
+    # unchanged rather than as a proxy link that would always be refused.
+    if not source or not is_canonical_plugin_source(source):
         return source
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
     encoded_source = quote(source, safe="")

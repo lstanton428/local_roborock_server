@@ -57,7 +57,7 @@ def test_plugin_endpoints_prefer_cloud_snapshot_catalogs(tmp_path: Path) -> None
                                 "category": "robot.vacuum.cleaner",
                                 "version": 9999,
                                 "apiLevel": 10043,
-                                "url": "https://files.roborock.com/iot/plugin/cloud-category.zip",
+                                "url": "https://files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd01.zip",
                                 "pluginLevel": 1,
                             }
                         ]
@@ -70,7 +70,7 @@ def test_plugin_endpoints_prefer_cloud_snapshot_catalogs(tmp_path: Path) -> None
                                 "moduleType": "PERSONAL_CENTER",
                                 "version": 999,
                                 "apiLevel": 10043,
-                                "url": "https://app-files.roborock.com/iot/plugin/cloud-feature.zip",
+                                "url": "https://app-files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd02.zip",
                                 "pluginLevel": 3002,
                                 "scope": "cloud",
                             }
@@ -81,7 +81,7 @@ def test_plugin_endpoints_prefer_cloud_snapshot_catalogs(tmp_path: Path) -> None
                     "data": [
                         {
                             "version": 8888,
-                            "url": "https://rrpkg-us.roborock.com/iot/plugin/cloud-product.zip",
+                            "url": "https://rrpkg-us.roborock.com/iot/plugin/0123456789abcdef0123456789abcd03.zip",
                             "pluginLevel": 3001,
                             "productid": 110,
                             "apilevel": 10043,
@@ -97,17 +97,17 @@ def test_plugin_endpoints_prefer_cloud_snapshot_catalogs(tmp_path: Path) -> None
     category_payload = client.get("/api/v1/plugins").json()
     category_record = category_payload["data"]["categoryPluginList"][0]
     assert category_record["version"] == 9999
-    assert _source_from_proxied_url(category_record["url"]) == "https://files.roborock.com/iot/plugin/cloud-category.zip"
+    assert _source_from_proxied_url(category_record["url"]) == "https://files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd01.zip"
 
     feature_payload = client.get("/api/v1/appfeatureplugin").json()
     feature_record = feature_payload["data"]["plugins"][0]
     assert feature_record["version"] == 999
-    assert _source_from_proxied_url(feature_record["url"]) == "https://app-files.roborock.com/iot/plugin/cloud-feature.zip"
+    assert _source_from_proxied_url(feature_record["url"]) == "https://app-files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd02.zip"
 
     app_plugin_payload = client.get("/api/v1/appplugin").json()
     app_plugin_record = app_plugin_payload["data"][0]
     assert app_plugin_record["version"] == 8888
-    assert _source_from_proxied_url(app_plugin_record["url"]) == "https://rrpkg-us.roborock.com/iot/plugin/cloud-product.zip"
+    assert _source_from_proxied_url(app_plugin_record["url"]) == "https://rrpkg-us.roborock.com/iot/plugin/0123456789abcdef0123456789abcd03.zip"
 
 
 def test_app_plugin_endpoints_return_proxied_urls(tmp_path: Path) -> None:
@@ -520,3 +520,17 @@ def test_plugin_cache_evicts_least_recently_used_files(tmp_path: Path, monkeypat
     remaining = {path.name for path in cache_dir.glob("*.zip")}
     assert remaining == {older.name, hit_path.name, new_path.name}
     assert sum(path.stat().st_size for path in cache_dir.glob("*.zip")) <= 25
+
+
+def test_plugin_proxy_url_leaves_non_canonical_sources_unproxied(tmp_path: Path) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    supervisor = _build_supervisor(tmp_path)
+    canonical = "https://files.roborock.com/iot/plugin/979bb22f91a24f10a8bafe232b4fb5ee.zip"
+    for source in (
+        f"{canonical}?version=2",
+        "https://files.roborock.com/iot/plugin/latest.zip",
+        "https://example.com/iot/plugin/979bb22f91a24f10a8bafe232b4fb5ee.zip",
+    ):
+        assert plugin_common.plugin_proxy_url(supervisor.context, source) == source
+    assert _source_from_proxied_url(plugin_common.plugin_proxy_url(supervisor.context, canonical)) == canonical

@@ -24,7 +24,7 @@ The setup uses three different credentials:
 - The **protocol login email and PIN** are the local login that Home Assistant or the Roborock app use after you repoint them to this server.
 - Your **Roborock cloud email and verification code** are used only by the admin dashboard's cloud import flow so the local server can fetch your current homes, rooms, routines, and known vacuums.
 
-After five failed attempts from the same address, the admin sign-in and the protocol PIN login make that address wait before trying again, starting at one second and doubling up to 15 minutes. A successful sign-in resets it. The server also stops accepting guesses from anyone for a while after 60 failures in an hour, so a mistyped PIN in Home Assistant can briefly return `too_many_attempts`.
+After five failed attempts from the same address, the admin sign-in and the protocol PIN login make that address wait before trying again, starting at one second and doubling up to 15 minutes. A successful sign-in resets it, and an address's failures are forgotten a day after its last one. The protocol PIN login also stops accepting guesses from anyone for a while after 60 failures in an hour, so a mistyped PIN in Home Assistant can briefly return `too_many_attempts`.
 
 ## Choose Your Certificate Path First
 

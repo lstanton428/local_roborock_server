@@ -107,3 +107,39 @@ def test_verify_password_rejects_out_of_range_iterations(iterations: str, monkey
 
     monkeypatch.setattr(security.hashlib, "pbkdf2_hmac", _no_hashing)
     assert verify_password("secret", f"pbkdf2_sha256${iterations}${salt}${digest}") is False
+
+
+def test_login_throttle_without_global_budget_ignores_distributed_failures() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(global_failures_per_window=None, clock=clock)
+
+    for index in range(1000):
+        throttle.record_failure(f"10.0.4.{index}")
+
+    assert throttle.retry_after("10.0.5.1") == 0
+    assert len(throttle._global_failures) == 0
+
+
+def test_login_throttle_caps_backoff_exponent_for_huge_failure_counts() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(max_delay_seconds=900, global_failures_per_window=None, clock=clock)
+    throttle._clients["10.0.6.1"] = (5000, clock.now)
+
+    assert throttle.retry_after("10.0.6.1") == 900
+    throttle.record_failure("10.0.6.1")
+    assert throttle.retry_after("10.0.6.1") == 900
+
+
+def test_login_throttle_forgets_failures_after_a_quiet_window() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(free_failures=3, forget_after_seconds=86400, clock=clock)
+
+    for _ in range(10):
+        throttle.record_failure("10.0.7.1")
+    clock.now += 86400
+
+    assert throttle.retry_after("10.0.7.1") == 0
+    # The count restarts, so the next failure is a free one again.
+    throttle.record_failure("10.0.7.1")
+    assert throttle.retry_after("10.0.7.1") == 0
+    assert throttle._clients["10.0.7.1"][0] == 1

@@ -1777,3 +1777,17 @@ def test_admin_network_check_covers_root_path_mounts(tmp_path: Path) -> None:
 
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 403
+
+
+def test_only_the_protocol_pin_throttle_has_a_global_failure_budget(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    for index in range(100):
+        supervisor.admin_login_throttle.record_failure(f"10.0.8.{index}")
+        supervisor.protocol_login_throttle.record_failure(f"10.0.8.{index}")
+
+    # Failures from many other addresses must not lock the owner out of the dashboard.
+    assert supervisor.admin_login_throttle.retry_after("10.0.9.1") == 0
+    assert supervisor.protocol_login_throttle.retry_after("10.0.9.1") > 0

@@ -534,3 +534,58 @@ def test_plugin_proxy_url_leaves_non_canonical_sources_unproxied(tmp_path: Path)
     ):
         assert plugin_common.plugin_proxy_url(supervisor.context, source) == source
     assert _source_from_proxied_url(plugin_common.plugin_proxy_url(supervisor.context, canonical)) == canonical
+
+
+_CANONICAL_A = "https://files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd0a.zip"
+_CANONICAL_B = "https://files.roborock.com/iot/plugin/0123456789abcdef0123456789abcd0b.zip"
+
+
+def test_plugin_proxy_shares_one_download_between_concurrent_requests(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    calls: list[str] = []
+
+    async def slow_download(source_url: str) -> tuple[bytes, str]:
+        calls.append(source_url)
+        await asyncio.sleep(0.05)
+        return b"zip-bytes", "application/zip"
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", slow_download)
+
+    async def run() -> list[bytes]:
+        responses = await asyncio.gather(
+            *(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A) for _ in range(5))
+        )
+        return [response.body for response in responses]
+
+    assert asyncio.run(run()) == [b"zip-bytes"] * 5
+    assert calls == [_CANONICAL_A]
+
+
+def test_plugin_proxy_limits_concurrent_downloads(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_MAX_CONCURRENT_DOWNLOADS", 1)
+    monkeypatch.setattr(plugin_common, "PLUGIN_PROXY_DOWNLOAD_SLOT_WAIT_SECONDS", 0.05)
+    release = None
+    calls: list[str] = []
+
+    async def blocking_download(source_url: str) -> tuple[bytes, str]:
+        calls.append(source_url)
+        await release.wait()
+        return b"zip-bytes", "application/zip"
+
+    monkeypatch.setattr(plugin_common, "download_plugin_zip", blocking_download)
+
+    async def run() -> None:
+        nonlocal release
+        release = asyncio.Event()
+        first = asyncio.ensure_future(plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_A))
+        await asyncio.sleep(0)
+        with pytest.raises(RuntimeError, match="too many plugin downloads"):
+            await plugin_common.plugin_proxy_response(runtime_dir=tmp_path, source_url=_CANONICAL_B)
+        release.set()
+        assert (await first).body == b"zip-bytes"
+
+    asyncio.run(run())
+    assert calls == [_CANONICAL_A]

@@ -551,3 +551,98 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
 
     assert manager.ensure_certificate() is True
     assert called["value"] is True
+
+
+def _zerossl_manager(tmp_path: Path, *, wildcard: bool) -> tuple[CertificateManager, object, list[list[str]]]:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        f"""
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "zerossl"
+wildcard = {"true" if wildcard else "false"}
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.cloudflare_token_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.cloudflare_token_file.write_text("cloudflare-token", encoding="utf-8")
+    manager = CertificateManager(config=config, paths=paths)
+    calls: list[list[str]] = []
+
+    def fake_run_acme(args: list[str]) -> None:
+        calls.append(list(args))
+        if "--install-cert" in args:
+            paths.cert_file.parent.mkdir(parents=True, exist_ok=True)
+            paths.cert_file.write_text("cert", encoding="utf-8")
+            paths.key_file.write_text("key", encoding="utf-8")
+
+    manager._run_acme = fake_run_acme  # type: ignore[method-assign]
+    return manager, paths, calls
+
+
+def _write_acme_domain(acme_dir: Path, directory: str, domain: str, alt: str) -> Path:
+    domain_dir = acme_dir / directory
+    domain_dir.mkdir(parents=True)
+    (domain_dir / f"{domain}.conf").write_text(f"Le_Domain='{domain}'\nLe_Alt='{alt}'\n", encoding="utf-8")
+    (domain_dir / f"{domain}.key").write_text("old-key", encoding="utf-8")
+    return domain_dir
+
+
+def test_exact_name_issuance_removes_superseded_wildcard_certificate(tmp_path: Path) -> None:
+    manager, paths, _calls = _zerossl_manager(tmp_path, wildcard=False)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+    current_dir = _write_acme_domain(
+        paths.acme_dir, "api-roborock.example.com", "api-roborock.example.com", "roborock.example.com"
+    )
+    unrelated_dir = _write_acme_domain(paths.acme_dir, "other.example.net", "other.example.net", "no")
+
+    manager._provision_or_renew()
+
+    assert not wildcard_dir.exists()
+    assert current_dir.exists()
+    assert unrelated_dir.exists()
+
+
+def test_wildcard_mode_keeps_its_certificate(tmp_path: Path) -> None:
+    manager, paths, _calls = _zerossl_manager(tmp_path, wildcard=True)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+
+    manager._provision_or_renew()
+
+    assert wildcard_dir.exists()
+
+
+def test_failed_issuance_keeps_the_wildcard_certificate(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=False)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+
+    def failing_run_acme(args: list[str]) -> None:
+        calls.append(list(args))
+        if "--issue" in args:
+            raise RuntimeError("ACME command failed")
+
+    manager._run_acme = failing_run_acme  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        manager._provision_or_renew()
+
+    assert wildcard_dir.exists()

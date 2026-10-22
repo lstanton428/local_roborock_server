@@ -45,7 +45,7 @@ hostname (the stack hostname without `api-`, such as `vac.cc` for `api-vac.cc`)
 and renews them through the existing renewal loop. That covers both the Qrevo
 and Saros examples above. If the camera domain is any other hostname, add it to
 `tls.extra_names`, or set `tls.wildcard = true` (`tls_wildcard` in the add-on)
-to issue `tls.base_domain` plus its wildcard instead. With provided
+to issue `tls.base_domain` plus its wildcard instead. When an exact-name certificate replaces a wildcard one from an earlier release, the old wildcard certificate and key are deleted from the ACME data directory after the new certificate is installed. With provided
 certificates, arrange renewal yourself. Actalis
 automatic provisioning covers only the API hostname; it does not provision a
 second camera alias needed by Qrevo. A Saros using the API hostname as its

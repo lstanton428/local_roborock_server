@@ -565,3 +565,20 @@ def test_protocol_login_trace_redacts_pin_and_issued_credentials(tmp_path: Path)
     assert "123456" not in entry["raw_path"]
     assert entry["response_json"]["code"] == login_response.json()["code"]
     assert entry["response_json"]["data"]["rriot"]["u"] == issued["rriot"]["u"]
+
+
+def test_recent_events_redact_login_codes_in_query(tmp_path: Path) -> None:
+    supervisor, _paths = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+
+    response = client.post(
+        "/api/v5/auth/email/login/code?verifyCode=123456&email=user@example.com",
+        json={"email": "user@example.com", "code": "123456"},
+    )
+    assert response.status_code == 200
+
+    event = next(
+        item for item in supervisor.runtime_state.recent_events() if item.get("route") == "protocol_login_submit_code"
+    )
+    assert "123456" not in event["raw_path"]
+    assert "verifyCode=%3Credacted%3E" in event["raw_path"]

@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .configure import hash_password
-from .config import LoggingConfig
+from .config import DEFAULT_TOPIC_ACL_MODE, TOPIC_ACL_MODES, LoggingConfig
 
 DEFAULT_OPTIONS: dict[str, Any] = {
     "stack_fqdn": "",
@@ -36,7 +36,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "admin_password": "",
     "protocol_login_email": "",
     "protocol_login_pin": "",
-    "mqtt_topic_acl": "audit",
+    "mqtt_topic_acl": DEFAULT_TOPIC_ACL_MODE,
     "turn_mode": "disabled",
     "turn_host": "",
     "turn_port": 3478,
@@ -211,9 +211,9 @@ def _render_config_toml(
     broker_mode = "embedded"
     broker_host = "127.0.0.1"
     broker_port = 18830
-    mqtt_topic_acl = str(merged.get("mqtt_topic_acl", "audit") or "audit").strip().lower()
-    if mqtt_topic_acl not in {"off", "audit", "enforce"}:
-        raise ValueError("mqtt_topic_acl must be 'off', 'audit' or 'enforce'")
+    mqtt_topic_acl = str(merged.get("mqtt_topic_acl") or DEFAULT_TOPIC_ACL_MODE).strip().lower()
+    if mqtt_topic_acl not in TOPIC_ACL_MODES:
+        raise ValueError(f"mqtt_topic_acl must be one of: {', '.join(TOPIC_ACL_MODES)}")
 
     tls_mode = str(merged.get("tls_mode", "provided") or "provided").strip().lower()
     if tls_mode not in {"provided", "cloudflare_acme"}:

@@ -47,6 +47,49 @@ def test_addon_rejects_invalid_logging_options_before_writing_config(tmp_path, o
     assert config_path.read_text() == "existing configuration"
 
 
+def _addon_options(**overrides: object) -> dict[str, object]:
+    return {
+        **yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())["options"],
+        "stack_fqdn": "api-roborock.example.com",
+        "cert_file": "/ssl/fullchain.pem",
+        "key_file": "/ssl/privkey.pem",
+        "admin_password": "super-secret-password",
+        "protocol_login_email": "user@example.com",
+        "protocol_login_pin": "123456",
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, "audit"), ("", "audit"), ("enforce", "enforce"), ("OFF", "off")])
+def test_addon_renders_mqtt_topic_acl(tmp_path: Path, value: object, expected: str) -> None:
+    manifest = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())
+    assert manifest["options"]["mqtt_topic_acl"] == "audit"
+    assert manifest["schema"]["mqtt_topic_acl"] == "list(off|audit|enforce)?"
+    options = _addon_options()
+    if value is None:
+        options.pop("mqtt_topic_acl")
+    else:
+        options["mqtt_topic_acl"] = value
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(options_path, options)
+
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+
+    assert tomllib.loads(config_path.read_text(encoding="utf-8"))["broker"]["topic_acl"] == expected
+    assert load_config(config_path).broker.topic_acl == expected
+
+
+def test_addon_rejects_unknown_mqtt_topic_acl(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(options_path, _addon_options(mqtt_topic_acl="strict"))
+
+    with pytest.raises(ValueError, match="mqtt_topic_acl must be one of: off, audit, enforce"):
+        write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert not config_path.exists()
+
+
 def test_write_config_from_home_assistant_options_provided_tls(tmp_path: Path) -> None:
     options_path = tmp_path / "options.json"
     config_path = tmp_path / "config.toml"

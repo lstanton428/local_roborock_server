@@ -62,6 +62,20 @@ def test_turn_config_rejects_nonpositive_ttl(tmp_path):
         load_config(path)
 
 
+def test_broker_topic_acl_defaults_to_audit_and_is_case_insensitive(tmp_path):
+    path = write_release_config(tmp_path)
+    assert load_config(path).broker.topic_acl == "audit"
+    path.write_text(path.read_text().replace("[broker]\n", '[broker]\ntopic_acl = "Enforce"\n'))
+    assert load_config(path).broker.topic_acl == "enforce"
+
+
+def test_broker_topic_acl_rejects_unknown_mode(tmp_path):
+    path = write_release_config(tmp_path)
+    path.write_text(path.read_text().replace("[broker]\n", '[broker]\ntopic_acl = "strict"\n'))
+    with pytest.raises(ValueError, match="broker.topic_acl must be one of: off, audit, enforce"):
+        load_config(path)
+
+
 def test_load_config_and_resolve_paths(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(

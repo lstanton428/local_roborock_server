@@ -431,9 +431,17 @@ def _format_http_error(status_code: int, raw_body: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Guided Roborock remote onboarding")
     parser.add_argument("--server", required=True, help="Main server hostname or HTTPS URL, usually starting with api-")
-    parser.add_argument("--admin-password", default="")
+    parser.add_argument(
+        "--admin-password",
+        default="",
+        help="Not recommended: visible in shell history and process lists. Omit to be prompted.",
+    )
     parser.add_argument("--ssid", default="")
-    parser.add_argument("--password", default="")
+    parser.add_argument(
+        "--password",
+        default="",
+        help="Home Wi-Fi password. Not recommended: visible in shell history and process lists. Omit to be prompted.",
+    )
     parser.add_argument("--timezone", default="")
     parser.add_argument("--cst", default="")
     parser.add_argument("--country-domain", default="")
@@ -548,8 +556,9 @@ def onboard_once(config: GuidedOnboardingConfig, output: TextIO = sys.stdout, *,
         wifi_pkt = build_wifi_packet(session_key, body)
         sock.sendto(wifi_pkt, target)
         output.write(f"TOKEN_S={token_s}\n")
-        output.write(f"TOKEN_T={token_t}\n")
-        output.write(f"WIFI_BODY_SENT={json.dumps(body, separators=(',', ':'))}\n")
+        output.write("TOKEN_T=<redacted>\n")
+        redacted_body = {**body, "passwd": "<redacted>", "token": {**body["token"], "t": "<redacted>"}}
+        output.write(f"WIFI_BODY_SENT={json.dumps(redacted_body, separators=(',', ':'))}\n")
 
         wifi_resp = recv_with_timeout(sock, CFGWIFI_TIMEOUT_SECONDS)
         if wifi_resp is None:

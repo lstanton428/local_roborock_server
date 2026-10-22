@@ -2598,7 +2598,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     hash_password = subparsers.add_parser("hash-password", help="Generate an admin password hash")
-    hash_password.add_argument("--password", default="")
+    hash_password.add_argument(
+        "--password",
+        default="",
+        help="Not recommended: visible in shell history and process lists. Omit to be prompted.",
+    )
 
     generate_secret = subparsers.add_parser("generate-secret", help="Generate a random admin session secret")
     generate_secret.add_argument("--bytes", type=int, default=32)

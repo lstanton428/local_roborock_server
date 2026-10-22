@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from textwrap import dedent
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -303,6 +304,44 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
     )
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_tuple(scheme: str, authority: str) -> tuple[str, str, int] | None:
+    try:
+        parts = urlsplit(f"{scheme}://{authority}")
+        host = (parts.hostname or "").lower()
+        port = parts.port or _DEFAULT_PORTS.get(scheme)
+    except ValueError:
+        return None
+    if not host or port is None:
+        return None
+    return scheme, host, port
+
+
+def _reject_cross_site(request: Request, supervisor: Any, *, json_body: bool) -> JSONResponse | None:
+    """Reject browser requests from another origin, and JSON bodies sent as simple requests.
+
+    The admin cookie is SameSite=Lax, which still allows same-site cross-origin
+    requests; a text/plain body would also parse as JSON without a CORS preflight.
+    """
+    if json_body:
+        content_type = str(request.headers.get("content-type") or "").partition(";")[0].strip().lower()
+        if content_type != "application/json":
+            return JSONResponse({"error": "Content-Type must be application/json"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin is None:
+        return None
+    # Behind a TLS-terminating proxy the backend sees http; cookie_secure accounts for that.
+    scheme = "https" if supervisor.cookie_secure(request) else "http"
+    expected = _origin_tuple(scheme, str(request.headers.get("host") or ""))
+    origin_parts = urlsplit(origin.strip())
+    actual = _origin_tuple(origin_parts.scheme.lower(), origin_parts.netloc) if origin_parts.scheme else None
+    if expected is None or actual != expected:
+        return JSONResponse({"error": "Cross-origin request rejected"}, status_code=403)
+    return None
+
+
 def register_standalone_admin_routes(
     *,
     app: FastAPI,
@@ -317,6 +356,8 @@ def register_standalone_admin_routes(
 
     @app.post("/admin/api/login")
     async def admin_login(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=True)) is not None:
+            return rejected
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -337,7 +378,9 @@ def register_standalone_admin_routes(
         return response
 
     @app.post("/admin/api/logout")
-    async def admin_logout() -> JSONResponse:
+    async def admin_logout(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=False)) is not None:
+            return rejected
         response = JSONResponse({"ok": True})
         response.delete_cookie(supervisor.session_manager.cookie_name, path="/")
         return response
@@ -359,6 +402,8 @@ def register_standalone_admin_routes(
 
     @app.post("/admin/api/auth")
     async def admin_auth_update(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=True)) is not None:
+            return rejected
         supervisor._require_admin(request)
         try:
             body = await request.json()
@@ -391,6 +436,8 @@ def register_standalone_admin_routes(
 
     @app.delete("/admin/api/auth/sessions/{hawk_id}/{hawk_session}")
     async def admin_auth_delete_session(hawk_id: str, hawk_session: str, request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=False)) is not None:
+            return rejected
         supervisor._require_admin(request)
         if not supervisor.remove_protocol_session(hawk_id=hawk_id, hawk_session=hawk_session):
             return JSONResponse({"error": "Protocol session not found"}, status_code=404)
@@ -403,6 +450,8 @@ def register_standalone_admin_routes(
 
     @app.post("/admin/api/onboarding/sessions")
     async def admin_onboarding_start(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=True)) is not None:
+            return rejected
         supervisor._require_admin(request)
         try:
             body = await request.json()
@@ -436,6 +485,8 @@ def register_standalone_admin_routes(
 
     @app.delete("/admin/api/onboarding/sessions/{session_id}")
     async def admin_onboarding_delete(session_id: str, request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=False)) is not None:
+            return rejected
         supervisor._require_admin(request)
         try:
             payload = supervisor.clear_onboarding_session(session_id=session_id)
@@ -446,6 +497,8 @@ def register_standalone_admin_routes(
 
     @app.post("/admin/api/cloud/request-code")
     async def admin_cloud_request_code(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=True)) is not None:
+            return rejected
         supervisor._require_admin(request)
         try:
             body = await request.json()
@@ -463,6 +516,8 @@ def register_standalone_admin_routes(
 
     @app.post("/admin/api/cloud/submit-code")
     async def admin_cloud_submit_code(request: Request) -> JSONResponse:
+        if (rejected := _reject_cross_site(request, supervisor, json_body=True)) is not None:
+            return rejected
         supervisor._require_admin(request)
         try:
             body = await request.json()

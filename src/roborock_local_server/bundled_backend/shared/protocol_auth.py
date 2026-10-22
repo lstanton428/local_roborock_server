@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Any, Mapping
 
+from .data_helpers import secret_equals
+
 
 def _clean_str(value: Any) -> str:
     return str(value or "").strip()
@@ -450,7 +452,7 @@ class ProtocolAuthStore:
         if not availability.users:
             return False, availability.reason, None
         for user in availability.users:
-            if username == user.mqtt_username and password == user.mqtt_password:
+            if secret_equals(username, user.mqtt_username) and secret_equals(password, user.mqtt_password):
                 return True, "user_hash", user
         return False, "invalid_mqtt_credentials", None
 
@@ -535,7 +537,7 @@ class ProtocolAuthStore:
             return False, "missing_authorization"
         if authorization.lower().startswith("bearer "):
             authorization = authorization[7:].strip()
-        matched_user = next((user for user in availability.users if authorization == user.token), None)
+        matched_user = next((user for user in availability.users if secret_equals(authorization, user.token)), None)
         if matched_user is None:
             return False, "invalid_token"
 

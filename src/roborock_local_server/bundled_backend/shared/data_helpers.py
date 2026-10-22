@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .context import ServerContext
+
+
+def secret_equals(provided: str, expected: str) -> bool:
+    """Constant-time string comparison for tokens and passwords."""
+    # compare_digest rejects non-ASCII str, so compare the encoded bytes instead.
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def get_value(data: dict[str, Any], *keys: str, default: Any = None) -> Any:

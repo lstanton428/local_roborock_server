@@ -1,3 +1,4 @@
+import hmac
 import json
 import time
 from pathlib import Path
@@ -526,3 +527,34 @@ def test_local_issued_and_imported_sessions_coexist(tmp_path: Path) -> None:
         },
     )
     assert imported_hawk_response.status_code == 200
+
+
+def test_token_and_user_mqtt_credentials_use_constant_time_comparison(tmp_path: Path, monkeypatch) -> None:
+    snapshot_path = tmp_path / "cloud_snapshot.json"
+    _seed_cloud_snapshot(snapshot_path)
+    store = ProtocolAuthStore(snapshot_path)
+    expected = store.expected_user_mqtt_credentials()
+    assert expected is not None
+    mqtt_username, mqtt_password = expected
+    compare_calls: list[tuple[object, object]] = []
+    original_compare_digest = hmac.compare_digest
+
+    def _counting_compare_digest(a, b):
+        compare_calls.append((a, b))
+        return original_compare_digest(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", _counting_compare_digest)
+
+    assert store.verify_token({"authorization": "Bearer local-token-123"}) == (True, "ok")
+    assert store.verify_token({"authorization": "local-token-124"}) == (False, "invalid_token")
+    assert store.verify_token({"authorization": "t\u00f6ken"}) == (False, "invalid_token")
+    assert compare_calls, "token comparison must use hmac.compare_digest"
+
+    compare_calls.clear()
+    assert store.verify_user_mqtt_credentials(mqtt_username, mqtt_password)[:2] == (True, "user_hash")
+    assert store.verify_user_mqtt_credentials(mqtt_username, mqtt_password + "x")[:2] == (
+        False,
+        "invalid_mqtt_credentials",
+    )
+    assert store.verify_user_mqtt_credentials(mqtt_username, "")[:2] == (False, "invalid_mqtt_credentials")
+    assert compare_calls, "MQTT password comparison must use hmac.compare_digest"

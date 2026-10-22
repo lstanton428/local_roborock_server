@@ -334,6 +334,22 @@ class MqttTlsProxy:
             "client_ip": client_ip.strip(),
         }
 
+    def _record_device_auth(self, conn_id: str, *, did: str, duid: str) -> None:
+        # Lets HTTP routes (camera TURN bootstrap) recognise this robot by its address.
+        if self.runtime_state is None:
+            return
+        self.runtime_state.record_mqtt_device_auth(conn_id=conn_id, did=str(did or ""), duid=str(duid or ""))
+
+    def _record_device_auth_from_connect(self, conn_id: str, connect_info: dict[str, Any] | None) -> None:
+        if self.runtime_credentials is None or connect_info is None:
+            return
+        authorized, _reason, device = self.runtime_credentials.verify_device_mqtt_credentials(
+            username=str(connect_info.get("username") or ""),
+            password=str(connect_info.get("password") or ""),
+        )
+        if authorized and device is not None:
+            self._record_device_auth(conn_id, did=device.get("did", ""), duid=device.get("duid", ""))
+
     def _confirm_pending_onboarding_auth(self, conn_id: str, *, direction: str, topic: str) -> bool:
         if direction != "c2b" or self.runtime_credentials is None:
             return True
@@ -367,6 +383,7 @@ class MqttTlsProxy:
             )
             self._close_conn_endpoints(conn_id)
             return False
+        self._record_device_auth(conn_id, did=learned.get("did", ""), duid=learned.get("duid", ""))
         self.logger.info(
             "[conn %s] learned onboarding MQTT credentials did=%s duid=%s username=%s",
             conn_id,
@@ -908,6 +925,8 @@ class MqttTlsProxy:
             self._register_conn_endpoints(conn_id, tls_conn, backend)
             if onboarding_candidate is not None:
                 self._set_pending_onboarding_auth(conn_id, onboarding_candidate)
+            elif auth_reason in {"device_mqtt_user", "device_mqtt_recovered"}:
+                self._record_device_auth_from_connect(conn_id, connect_info)
             if topic_acl is not None:
                 with self._lock:
                     self._conn_topic_acls[conn_id] = topic_acl

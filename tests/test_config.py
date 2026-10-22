@@ -41,6 +41,19 @@ def test_turn_config_defaults_and_rejects_unsafe_provided_credentials(tmp_path):
         load_config(path)
 
 
+def test_turn_denied_peer_ips_is_optional_and_validated(tmp_path):
+    path = write_release_config(tmp_path)
+    base = path.read_text()
+    turn = '\n[turn]\nmode="provided"\nhost="relay.example"\npassword="secret"\n'
+    path.write_text(base + turn)
+    assert load_config(path).turn.denied_peer_ips == ()
+    path.write_text(base + turn + 'denied_peer_ips=["10.0.0.0/8", "192.168.50.7"]\n')
+    assert load_config(path).turn.denied_peer_ips == ("10.0.0.0/8", "192.168.50.7")
+    path.write_text(base + turn + 'denied_peer_ips=["not-an-ip"]\n')
+    with pytest.raises(ValueError, match="turn.denied_peer_ips"):
+        load_config(path)
+
+
 def test_turn_config_mode_is_case_insensitive(tmp_path):
     path = write_release_config(tmp_path)
     path.write_text(path.read_text() + '\n[turn]\nmode="Provided"\nhost="relay.example"\npassword="secret"\n')

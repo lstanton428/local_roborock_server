@@ -101,3 +101,6 @@ username = ""
 password = ""
 realm = "api-roborock.example.com"
 ttl = 86400
+# Provided mode: extra peer ranges coturn must not relay to (loopback, link-local,
+# multicast and the container address are always denied). See docs/camera.md.
+# denied_peer_ips = ["10.0.0.0/8"]

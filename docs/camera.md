@@ -106,6 +106,35 @@ set; an explicit `mode` takes precedence.
 For external mode, supply the relay's host, port, username, password and realm;
 no local TURN port publication is required. It must support authenticated UDP
 allocations. Either active mode makes `/fwapi/createca` return relay credentials.
+
+`/fwapi/createca` has no protocol authentication, so the relay username and
+password are only returned to a client whose address has a live MQTT session
+authenticated with a vacuum's own device credentials. The robot keeps that
+session open while the app drives it, so camera bootstrap is unaffected. Other
+callers, such as the onboarding preflight, receive the advertised endpoint
+without credentials. If MQTT reaches the server through a stream proxy listed in
+`network.trusted_proxies`, the robot's address is taken from its own HTTP
+requests instead. A robot that is not connected over MQTT gets no credentials.
+
+### Relay peer restrictions (provided mode)
+
+The provided coturn refuses to relay to loopback, `0.0.0.0/8`, link-local,
+multicast and reserved ranges, IPv4-mapped IPv6 addresses, and the container's
+own address. This stops a relay client from reaching services inside the
+container or on the host's loopback interface. Private (RFC 1918) and CGNAT
+(`100.64.0.0/10`, used by Tailscale) ranges stay allowed: the robot and the
+camera viewer are usually on the LAN or a tailnet, and ICE may pair the robot's
+relay candidate with the viewer's LAN address. The trade-off is that a client
+holding the TURN credentials can still relay to other LAN hosts. To narrow this,
+list ranges that no viewer uses:
+
+```toml
+[turn]
+denied_peer_ips = ["10.0.0.0/8", "192.168.50.0/24"]
+```
+
+With host networking the container's address is also the advertised relay
+address, so it is not denied in that case.
 Status reports provided relay process health. A bootstrap response alone does
 not prove media connectivity: verify an authenticated allocation and force a
 viewer to use a relay candidate when testing actual frames.

@@ -540,3 +540,51 @@ def test_onboarding_mqtt_from_bound_ip_with_other_did_is_not_adopted(tmp_path: P
     snapshot = state.onboarding_session_snapshot()
     assert snapshot["target"]["did"] == "1103821560705"
     assert state.active_onboarding_target_did() == "1103821560705"
+
+
+def test_is_vacuum_client_ip_requires_device_authenticated_mqtt_session(tmp_path: Path) -> None:
+    state = RuntimeState(log_dir=tmp_path, key_state_file=None)
+    state.record_mqtt_connection(conn_id="ha", client_ip="192.168.8.20", client_port=40000)
+    state.record_mqtt_connection(conn_id="robot", client_ip="192.168.8.10", client_port=40001)
+    # Any HTTP caller can tag a request with a known did; that alone is not enough.
+    state.record_http_event(
+        event_time="2026-10-22T10:00:00+00:00",
+        route_name="catchall",
+        clean_path="/anything",
+        raw_path="/anything?did=1103821560705",
+        method="GET",
+        host="api.example.com",
+        remote="192.168.8.99:5555",
+        did="1103821560705",
+    )
+    assert not state.is_vacuum_client_ip("192.168.8.10")
+
+    state.record_mqtt_device_auth(conn_id="robot", did="1103821560705", duid="6HL2zfniaoYYV01CkVuhkO")
+
+    assert state.is_vacuum_client_ip("192.168.8.10")
+    assert state.is_vacuum_client_ip("192.168.8.10:443")
+    assert not state.is_vacuum_client_ip("192.168.8.20")
+    assert not state.is_vacuum_client_ip("192.168.8.99")
+    assert not state.is_vacuum_client_ip("")
+    state.record_mqtt_disconnect(conn_id="robot")
+    assert not state.is_vacuum_client_ip("192.168.8.10")
+
+
+def test_is_vacuum_client_ip_uses_device_http_address_behind_trusted_stream_proxy(tmp_path: Path) -> None:
+    state = RuntimeState(log_dir=tmp_path, key_state_file=None, trusted_proxies=["10.42.0.0/16"])
+    state.record_mqtt_connection(conn_id="robot", client_ip="10.42.0.5", client_port=40001)
+    state.record_mqtt_device_auth(conn_id="robot", did="1103821560705")
+    state.record_http_event(
+        event_time="2026-10-22T10:00:00+00:00",
+        route_name="region",
+        clean_path="/region",
+        raw_path="/region?did=1103821560705",
+        method="GET",
+        host="api.example.com",
+        remote="192.168.8.10:5555",
+        did="1103821560705",
+    )
+
+    assert state.is_vacuum_client_ip("192.168.8.10")
+    assert not state.is_vacuum_client_ip("192.168.8.11")
+    assert not state.is_vacuum_client_ip("10.42.0.6")

@@ -27,6 +27,12 @@ ICE-style ``username``/``credential`` names; both are populated so either parser
 in the firmware is satisfied. When ``[turn].mode`` is ``disabled`` (the default)
 the request falls through to the catchall, so behaviour is unchanged for anyone not
 running a TURN server.
+
+The route itself is not authenticated (the firmware sends no protocol auth here), so
+the server only returns the relay credentials to a client whose address belongs to a
+vacuum with a live device-authenticated MQTT session. Any other caller gets
+:func:`without_credentials`: the same advertised endpoint, which the onboarding
+preflight checks, but no username or password.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ from ..bootstrap.catchall import build as _build_catchall
 
 # The firmware posts to this path on the iot/fwapi host; accept common prefixes.
 _MATCH_SUFFIX = "/fwapi/createca"
+_CREDENTIAL_FIELDS = frozenset({"user", "pwd", "username", "credential"})
 
 
 def match(path: str, _method: str = "POST") -> bool:
@@ -60,6 +67,15 @@ def build_turn_payload(
         "username": username,
         "credential": password,
         "realm": realm or host,
+    }
+
+
+def without_credentials(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the TURN username/password from a createca response, keeping the endpoint."""
+    return {
+        key: ({field: value for field, value in part.items() if field not in _CREDENTIAL_FIELDS}
+              if isinstance(part, dict) else part)
+        for key, part in payload.items()
     }
 
 

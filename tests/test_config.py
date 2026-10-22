@@ -590,3 +590,16 @@ def test_tls_extra_names_rejects_wildcards(tmp_path: Path, name: str) -> None:
     path = _with_tls_lines(write_release_config(tmp_path), f'extra_names = ["cam.example.com", "{name}"]')
     with pytest.raises(ValueError, match="tls.extra_names cannot contain wildcard names"):
         load_config(path)
+
+
+def test_admin_allowed_networks_rejects_an_explicit_empty_list(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    text = config_file.read_text(encoding="utf-8")
+    config_file.write_text(text.replace("[admin]\n", "[admin]\nallowed_networks = []\n", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"admin.allowed_networks is empty.*0\.0\.0\.0/0"):
+        load_config(config_file)
+
+    config_file.write_text(
+        text.replace("[admin]\n", '[admin]\nallowed_networks = ["0.0.0.0/0", "::/0"]\n', 1), encoding="utf-8"
+    )
+    assert load_config(config_file).admin.allowed_networks == ("0.0.0.0/0", "::/0")

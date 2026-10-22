@@ -89,6 +89,7 @@ options:
   new_connections_window_minutes: 30
   admin_allowed_networks: []
   mqtt_topic_acl: "audit"
+  trusted_proxies: []
   turn_mode: "disabled"
   turn_host: ""
   turn_port: 3478
@@ -124,6 +125,8 @@ schema:
   admin_allowed_networks:
     - str?
   mqtt_topic_acl: list(off|audit|enforce)?
+  trusted_proxies:
+    - str?
   turn_mode: list(disabled|provided|external)?
   turn_host: str?
   turn_port: port?

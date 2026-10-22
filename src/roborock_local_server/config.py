@@ -224,7 +224,13 @@ def _as_port(value: object, field_name: str, default: int) -> int:
     return candidate
 
 
-def _as_trusted_proxies(value: object, field_name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+def _as_ip_networks(
+    value: object,
+    field_name: str,
+    default: tuple[str, ...],
+    *,
+    allow_empty: bool = True,
+) -> tuple[str, ...]:
     if value is None:
         return default
     if isinstance(value, str):
@@ -241,6 +247,11 @@ def _as_trusted_proxies(value: object, field_name: str, default: tuple[str, ...]
         except ValueError as exc:
             raise ValueError(f"{field_name} entry {text!r} is not a valid IP address or CIDR network") from exc
         entries.append(text)
+    if not entries and not allow_empty:
+        raise ValueError(
+            f"{field_name} is empty, which would block every client. Remove it to use the defaults, "
+            'or set it to ["0.0.0.0/0", "::/0"] to allow every address'
+        )
     return tuple(entries)
 
 
@@ -349,7 +360,7 @@ def load_config(path: str | Path) -> AppConfig:
             mqtt_username=str(network.get("mqtt_username", "")).strip(),
             mqtt_password=str(network.get("mqtt_password", "")).strip(),
             mqtt_client_id=str(network.get("mqtt_client_id", "")).strip(),
-            trusted_proxies=_as_trusted_proxies(
+            trusted_proxies=_as_ip_networks(
                 network.get("trusted_proxies"),
                 "network.trusted_proxies",
                 NetworkConfig.trusted_proxies,
@@ -411,10 +422,11 @@ def load_config(path: str | Path) -> AppConfig:
                 "admin.new_connections_window_minutes",
                 30,
             ),
-            allowed_networks=_as_trusted_proxies(
+            allowed_networks=_as_ip_networks(
                 admin.get("allowed_networks"),
                 "admin.allowed_networks",
                 AdminConfig.allowed_networks,
+                allow_empty=False,
             ),
         ),
         turn=TurnConfig(

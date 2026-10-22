@@ -1830,3 +1830,64 @@ def test_polling_onboarding_does_not_reopen_an_expired_window(tmp_path: Path, mo
     now["value"] += 31 * 60
     supervisor.onboarding_session_snapshot(session_id=session_id)
     assert supervisor.new_connections_enabled() is False
+
+
+def test_admin_rejects_forwarding_headers_from_an_untrusted_peer(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    # On an allowed network, but not a trusted proxy: its forwarding headers are
+    # ignored, so the guard cannot know the real client.
+    lan_proxy = TestClient(supervisor.app, client=("192.168.1.50", 40000))
+
+    assert lan_proxy.get("/admin").status_code == 200
+    for headers in ({"X-Forwarded-For": "203.0.113.7"}, {"Forwarded": "for=203.0.113.7"}):
+        response = lan_proxy.get("/admin/api/status", headers=headers)
+        assert response.status_code == 403, headers
+        assert "network.trusted_proxies" in response.json()["error"]
+        assert "192.168.1.50" in response.json()["error"]
+
+    # Protocol routes are unaffected.
+    assert lan_proxy.post(
+        "/api/v5/auth/email/login/code",
+        json={"email": "user@example.com", "code": "123456"},
+        headers={"X-Forwarded-For": "203.0.113.7"},
+    ).status_code == 200
+
+
+def test_admin_accepts_forwarding_headers_from_a_configured_trusted_proxy(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    config = replace(config, network=replace(config.network, trusted_proxies=("192.168.1.0/24",)))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    lan_proxy = TestClient(supervisor.app, client=("192.168.1.50", 40000))
+
+    assert lan_proxy.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 200
+    response = lan_proxy.get("/admin", headers={"X-Forwarded-For": "203.0.113.7"})
+    assert response.status_code == 403
+    assert "not available from this network" in response.json()["error"]
+
+
+def test_admin_network_lists_are_parsed_once(tmp_path: Path, monkeypatch) -> None:
+    import ipaddress
+
+    from roborock_local_server import server as server_module
+
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app, client=("192.168.1.50", 40000))
+    assert client.get("/admin").status_code == 200
+
+    calls = {"count": 0}
+    real_ip_network = ipaddress.ip_network
+
+    def counting_ip_network(*args, **kwargs):
+        calls["count"] += 1
+        return real_ip_network(*args, **kwargs)
+
+    monkeypatch.setattr(server_module.ipaddress, "ip_network", counting_ip_network)
+    for _ in range(3):
+        assert client.get("/admin").status_code == 200
+        assert client.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 403
+    assert calls["count"] == 0

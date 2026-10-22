@@ -72,7 +72,8 @@ protocol_auth_enabled = true
 # Networks allowed to open /admin. Defaults to loopback, private LAN ranges
 # (10/8, 172.16/12, 192.168/16, fc00::/7, fe80::/10) and 100.64.0.0/10, which
 # Tailscale uses. Behind a reverse proxy, list the proxy in network.trusted_proxies
-# so the check sees the real client address.
+# so the check sees the real client address. An empty list is an error; use
+# ["0.0.0.0/0", "::/0"] to allow every address.
 # allowed_networks = ["192.168.1.0/24", "100.64.0.0/10"]
 new_connections_enabled = true
 # New connections (app logins, onboarding, first vacuum connections) close this

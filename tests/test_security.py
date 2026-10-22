@@ -16,7 +16,6 @@ def test_admin_session_verification_rejects_tampering() -> None:
     assert manager.verify(token + "tampered") is None
 
 
-
 class _FakeClock:
     def __init__(self) -> None:
         self.now = 1000.0
@@ -69,3 +68,39 @@ def test_login_throttle_bounds_tracked_clients() -> None:
         throttle.record_failure(f"10.0.3.{index}")
 
     assert len(throttle._clients) == 3
+
+
+def test_login_throttle_without_global_budget_ignores_distributed_failures() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(global_failures_per_window=None, clock=clock)
+
+    for index in range(1000):
+        throttle.record_failure(f"10.0.4.{index}")
+
+    assert throttle.retry_after("10.0.5.1") == 0
+    assert len(throttle._global_failures) == 0
+
+
+def test_login_throttle_caps_backoff_exponent_for_huge_failure_counts() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(max_delay_seconds=900, global_failures_per_window=None, clock=clock)
+    throttle._clients["10.0.6.1"] = (5000, clock.now)
+
+    assert throttle.retry_after("10.0.6.1") == 900
+    throttle.record_failure("10.0.6.1")
+    assert throttle.retry_after("10.0.6.1") == 900
+
+
+def test_login_throttle_forgets_failures_after_a_quiet_window() -> None:
+    clock = _FakeClock()
+    throttle = LoginThrottle(free_failures=3, forget_after_seconds=86400, clock=clock)
+
+    for _ in range(10):
+        throttle.record_failure("10.0.7.1")
+    clock.now += 86400
+
+    assert throttle.retry_after("10.0.7.1") == 0
+    # The count restarts, so the next failure is a free one again.
+    throttle.record_failure("10.0.7.1")
+    assert throttle.retry_after("10.0.7.1") == 0
+    assert throttle._clients["10.0.7.1"][0] == 1

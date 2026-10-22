@@ -98,23 +98,30 @@ class AdminSessionManager:
         return SessionClaims(issued_at=issued_at, expires_at=expires_at)
 
 
-
 class LoginThrottle:
-    """Back off repeated failed logins per client and across all clients.
+    """Back off repeated failed logins per client and, optionally, across all clients.
 
     Each client gets a few free failures, then must wait an exponentially
-    growing delay before the next attempt. A global failure budget bounds
-    guessing spread across many addresses; the 6-digit protocol PIN only has a
-    million values, so per-address limits alone are not enough.
+    growing delay before the next attempt. A client's failures are forgotten
+    once its last failure is older than forget_after_seconds. The optional
+    global failure budget bounds guessing spread across many addresses; the
+    6-digit protocol PIN only has a million values, so per-address limits alone
+    are not enough there. None disables it, so a high-entropy secret such as
+    the admin password cannot be locked out for everyone by one noisy client.
     """
+
+    # 2 ** 20 seconds is far beyond any sane max_delay; capping the exponent
+    # keeps a huge failure count from overflowing the float.
+    _MAX_BACKOFF_EXPONENT = 20
 
     def __init__(
         self,
         *,
         free_failures: int = 5,
         max_delay_seconds: float = 900.0,
-        global_failures_per_window: int = 60,
+        global_failures_per_window: int | None = 60,
         global_window_seconds: float = 3600.0,
+        forget_after_seconds: float = 86400.0,
         max_tracked_clients: int = 4096,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -122,6 +129,7 @@ class LoginThrottle:
         self._max_delay = max_delay_seconds
         self._global_limit = global_failures_per_window
         self._global_window = global_window_seconds
+        self._forget_after = forget_after_seconds
         self._max_tracked = max_tracked_clients
         self._clock = clock
         self._clients: dict[str, tuple[int, float]] = {}
@@ -132,25 +140,35 @@ class LoginThrottle:
         now = self._clock()
         self._expire_global(now)
         waits = [0.0]
-        if len(self._global_failures) >= self._global_limit:
+        if self._global_limit is not None and len(self._global_failures) >= self._global_limit:
             waits.append(self._global_failures[0] + self._global_window - now)
-        failures, last_failure = self._clients.get(client, (0, 0.0))
+        failures, last_failure = self._client_failures(client, now)
         if failures >= self._free_failures:
-            delay = min(2.0 ** (failures - self._free_failures), self._max_delay)
+            exponent = min(failures - self._free_failures, self._MAX_BACKOFF_EXPONENT)
+            delay = min(2.0 ** exponent, self._max_delay)
             waits.append(last_failure + delay - now)
         return max(waits)
 
     def record_failure(self, client: str) -> None:
         now = self._clock()
-        failures, _last_failure = self._clients.pop(client, (0, 0.0))
+        failures, _last_failure = self._client_failures(client, now)
+        self._clients.pop(client, None)
         self._clients[client] = (failures + 1, now)
-        self._global_failures.append(now)
-        self._expire_global(now)
+        if self._global_limit is not None:
+            self._global_failures.append(now)
+            self._expire_global(now)
         while len(self._clients) > self._max_tracked:
             self._clients.pop(next(iter(self._clients)))
 
     def record_success(self, client: str) -> None:
         self._clients.pop(client, None)
+
+    def _client_failures(self, client: str, now: float) -> tuple[int, float]:
+        failures, last_failure = self._clients.get(client, (0, 0.0))
+        if failures and now - last_failure >= self._forget_after:
+            self._clients.pop(client, None)
+            return 0, 0.0
+        return failures, last_failure
 
     def _expire_global(self, now: float) -> None:
         while self._global_failures and self._global_failures[0] <= now - self._global_window:

@@ -370,8 +370,10 @@ class ReleaseSupervisor:
             secret=config.admin.session_secret,
             ttl_seconds=config.admin.session_ttl_seconds,
         )
-        self.admin_login_throttle = LoginThrottle()
-        self.protocol_login_throttle = LoginThrottle()
+        # Only the 6-digit PIN needs the global budget; on the admin password it
+        # would just let anyone lock the owner out.
+        self.admin_login_throttle = LoginThrottle(global_failures_per_window=None)
+        self.protocol_login_throttle = LoginThrottle(global_failures_per_window=60)
         # Serializes password checks: bounds hashing CPU and makes throttle
         # decisions see every earlier failure.
         self.login_check_lock = asyncio.Lock()

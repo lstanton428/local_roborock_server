@@ -1589,3 +1589,17 @@ def test_admin_login_is_throttled_after_repeated_wrong_passwords(tmp_path: Path)
     assert int(throttled.headers["Retry-After"]) >= 1
     assert "Too many failed sign-in attempts" in throttled.json()["error"]
     assert supervisor.session_manager.cookie_name not in throttled.cookies
+
+
+def test_only_the_protocol_pin_throttle_has_a_global_failure_budget(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    for index in range(100):
+        supervisor.admin_login_throttle.record_failure(f"10.0.8.{index}")
+        supervisor.protocol_login_throttle.record_failure(f"10.0.8.{index}")
+
+    # Failures from many other addresses must not lock the owner out of the dashboard.
+    assert supervisor.admin_login_throttle.retry_after("10.0.9.1") == 0
+    assert supervisor.protocol_login_throttle.retry_after("10.0.9.1") > 0

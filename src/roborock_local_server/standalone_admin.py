@@ -67,8 +67,8 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           <div style="margin-top:12px">
             <div style="font-weight:600">Protocol Sync Secret</div>
             <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-              <input id="adminSessionSecret" readonly style="flex:1;min-width:320px;padding:8px" />
-              <button id="copySessionSecret">Copy</button>
+              <input id="protocolSyncSecret" readonly style="flex:1;min-width:320px;padding:8px" />
+              <button id="copyProtocolSyncSecret">Copy</button>
             </div>
             <div id="syncSecretMeta" style="margin-top:6px;color:#555">Use this with <code>mitm_redirect.py --sync-secret ...</code>.</div>
           </div>
@@ -169,9 +169,9 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           }}
           document.getElementById("authMeta").textContent =
             `New connections: ${{connectionState}}. Persisted sessions: ${{Number(auth.protocol_session_count || 0)}}.`;
-          const sessionSecret = String(auth.protocol_sync_secret || "");
-          document.getElementById("adminSessionSecret").value = sessionSecret;
-          document.getElementById("syncSecretMeta").textContent = sessionSecret
+          const protocolSyncSecret = String(auth.protocol_sync_secret || "");
+          document.getElementById("protocolSyncSecret").value = protocolSyncSecret;
+          document.getElementById("syncSecretMeta").textContent = protocolSyncSecret
             ? "Use this with mitm_redirect.py --sync-secret ..."
             : "No protocol sync secret is configured.";
 
@@ -282,8 +282,8 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             document.getElementById("authMeta").textContent = error.message;
           }}
         }});
-        document.getElementById("copySessionSecret").addEventListener("click", async () => {{
-          const input = document.getElementById("adminSessionSecret");
+        document.getElementById("copyProtocolSyncSecret").addEventListener("click", async () => {{
+          const input = document.getElementById("protocolSyncSecret");
           if (!input.value) {{
             document.getElementById("syncSecretMeta").textContent = "No protocol sync secret is configured.";
             return;

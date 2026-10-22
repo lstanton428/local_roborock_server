@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.security import derive_protocol_sync_secret
 from roborock_local_server.config import TurnConfig
 from roborock_local_server.server import ReleaseSupervisor, resolve_route
+from roborock_local_server.standalone_admin import _admin_dashboard_html
 from shared.constants import DEFAULT_PRODUCT_SCHEMA
 from shared.protocol_auth import ProtocolAuthStore, build_hawk_authorization
 
@@ -288,6 +290,10 @@ def test_admin_login_and_status_flow(tmp_path: Path) -> None:
     assert "New Connections" in dashboard_page.text
     assert "Allow new app logins, onboarding, and first-time vacuum connections" in dashboard_page.text
     assert "Protocol Sync Secret" in dashboard_page.text
+    # The sync secret is not the admin session secret; keep the page from saying so.
+    assert 'id="protocolSyncSecret"' in dashboard_page.text
+    assert "SessionSecret" not in dashboard_page.text
+    assert "sessionSecret" not in dashboard_page.text
 
     assert "Num query samples" in dashboard_page.text
     assert "Public Key determined" in dashboard_page.text
@@ -1576,6 +1582,16 @@ def test_execute_scene_hydrates_missing_zone_ranges_from_mqtt(tmp_path: Path) ->
     persisted_outer = json.loads(scene["param"])
     persisted_step = json.loads(persisted_outer["action"]["items"][0]["param"])
     assert persisted_step["params"]["data"][0]["zones"][0]["range"] == [32800, 22750, 34550, 25350]
+
+
+def test_docs_point_to_the_dashboard_section_that_shows_the_sync_secret() -> None:
+    headings = set(re.findall(r"<h2>([^<]+)</h2>", _admin_dashboard_html({})))
+    for doc in ("docs/roborock_app.md", "docs/home_assistant.md"):
+        lines = [line for line in Path(doc).read_text(encoding="utf-8").splitlines() if "**Protocol Sync Secret**" in line]
+        assert lines, doc
+        for line in lines:
+            sections = set(re.findall(r"\*\*([^*]+)\*\*", line)) - {"Protocol Sync Secret"}
+            assert sections and sections <= headings, (doc, line)
 
 
 def test_admin_login_is_throttled_after_repeated_wrong_passwords(tmp_path: Path) -> None:

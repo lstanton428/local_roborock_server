@@ -1011,6 +1011,40 @@ def test_handle_client_closes_tls_conn_when_connect_is_rejected(tmp_path, monkey
     assert tls_conn.closed is True
 
 
+def test_handle_client_escapes_control_characters_in_rejected_connect_warning(tmp_path, monkeypatch, caplog) -> None:
+    cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
+    _seed_cloud_snapshot(cloud_snapshot_path)
+    proxy = MqttTlsProxy(
+        cert_file=tmp_path / "fullchain.pem",
+        key_file=tmp_path / "privkey.pem",
+        listen_host="127.0.0.1",
+        listen_port=8883,
+        backend_host="127.0.0.1",
+        backend_port=1883,
+        localkey="test-local-key",
+        logger=logging.getLogger("test.mqtt_tls_proxy"),
+        decoded_jsonl=tmp_path / "decoded.jsonl",
+        cloud_snapshot_path=cloud_snapshot_path,
+    )
+    tls_conn = _FakeSourceSocket(
+        _build_connect_packet(
+            client_id="bad\rclient",
+            username="unknown\n2026-04-17 16:20:30,000 [INFO] [conn 9 c2b] CONNECT len=70 hex=10",
+            password="unknown-pass",
+        )
+    )
+    monkeypatch.setattr(proxy, "_queue_trace_packet", lambda *args: None)
+
+    proxy._running = True
+    with caplog.at_level(logging.WARNING, logger="test.mqtt_tls_proxy"):
+        proxy._handle_client(tls_conn, ("127.0.0.1", 4321))
+
+    [message] = [record.getMessage() for record in caplog.records if "rejected MQTT CONNECT" in record.getMessage()]
+    assert "\n" not in message and "\r" not in message
+    assert "client_id='bad\\rclient'" in message
+    assert "username='unknown\\n2026-04-17" in message
+
+
 def test_handle_client_returns_mqtt5_not_authorized_connack_on_rejected_connect(tmp_path, monkeypatch) -> None:
     cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
     _seed_cloud_snapshot(cloud_snapshot_path)

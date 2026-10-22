@@ -763,7 +763,9 @@ class MqttTlsProxy:
             self._queue_trace_packet(conn_id, "c2b", connect_packet)
             if not authorized:
                 self.logger.warning(
-                    "[conn %s] rejected MQTT CONNECT reason=%s client_id=%s username=%s",
+                    # %r escapes control characters, so a crafted client_id or
+                    # username cannot start a fake line in mqtt_server.log.
+                    "[conn %s] rejected MQTT CONNECT reason=%s client_id=%r username=%r",
                     conn_id,
                     auth_reason,
                     str((connect_info or {}).get("client_id") or ""),

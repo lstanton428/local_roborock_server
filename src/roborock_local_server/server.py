@@ -447,6 +447,18 @@ class ReleaseSupervisor:
         )
         if recovered_device_passwords:
             self.root_logger.info("Recovered %d device MQTT password(s) from mqtt_server.log", recovered_device_passwords)
+        if not self.new_connections_enabled():
+            waiting = self.runtime_credentials.recovery_pending_devices()
+            if waiting:
+                self.root_logger.warning(
+                    "New connections are disabled; %d device(s) waiting for MQTT password recovery cannot "
+                    "connect until they are allowed: %s",
+                    len(waiting),
+                    ", ".join(
+                        repr(item.get("name") or item.get("duid") or item.get("did") or item.get("device_mqtt_usr"))
+                        for item in waiting
+                    ),
+                )
 
         # Recover legacy state before retention trims oversized files or removes
         # backups, including when the user lowers the configured limits.

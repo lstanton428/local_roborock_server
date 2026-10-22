@@ -438,8 +438,12 @@ class ReleaseSupervisor:
             mqtt_backend_port=self.config.broker.port,
         )
         self.runtime_credentials.sync_inventory()
-        recovered_device_passwords = self.runtime_credentials.backfill_device_mqtt_passwords(
-            self.paths.runtime_dir / "mqtt_server.log"
+        # Recovering a missing device password trusts whatever the device last
+        # presented, so it is a first-time connection like any other.
+        recovered_device_passwords = (
+            self.runtime_credentials.backfill_device_mqtt_passwords(self.paths.runtime_dir / "mqtt_server.log")
+            if self.new_connections_enabled()
+            else 0
         )
         if recovered_device_passwords:
             self.root_logger.info("Recovered %d device MQTT password(s) from mqtt_server.log", recovered_device_passwords)

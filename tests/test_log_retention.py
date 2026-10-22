@@ -214,7 +214,10 @@ def test_supervisor_recovers_state_before_trimming_or_removing_logs(tmp_path, so
     credentials.ensure_device(did="123", duid="vacuum", device_mqtt_usr="c25b14ceac358d2a", assign_localkey=False)
     connect = "CONNECT len=82 hex=105000044d51545404c2001e00106130313233393163623566386263393700106332356231346365616333353864326100206666383932326432346139613961663831663138663335646365653961356135"
     mqtt_log = paths.runtime_dir / ("mqtt_server.log" + source_suffix)
-    mqtt_log.write_text("[INFO] " + connect + "\n" + "later event\n" * 100_000)
+    connack = "CONNACK len=4 hex=20020000"
+    mqtt_log.write_text(
+        "[INFO] [conn 1 c2b] " + connect + "\n[INFO] [conn 1 b2c] " + connack + "\n" + "later event\n" * 100_000
+    )
     mqtt_jsonl = paths.runtime_dir / ("decompiled_mqtt.jsonl" + source_suffix)
     mqtt_jsonl.write_text(json.dumps(zone_entry([1, 2, 3, 4])) + "\n" + '{"later":true}\n' * 100_000)
     # Also exercise cleanup for an inactive service, which may not emit on startup.

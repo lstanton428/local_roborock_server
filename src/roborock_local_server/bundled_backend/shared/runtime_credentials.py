@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import secrets
 import threading
 from typing import Any
@@ -14,6 +15,9 @@ from urllib.parse import parse_qs
 from roborock_local_server.log_retention import iter_log_lines
 
 from .data_helpers import utcnow_iso
+
+
+_TRACE_LINE_RE = re.compile(r"\[conn (?P<conn>\S+) (?P<direction>c2b|b2c)\] (?P<packet>[A-Z_0-9]+) .* hex=(?P<hex>[0-9a-fA-F]*)\s*$")
 
 
 def _clean_str(value: Any) -> str:
@@ -714,25 +718,33 @@ class RuntimeCredentialsStore:
         if not pending_usernames:
             return 0
 
+        # The log also holds CONNECTs the proxy rejected, so only trust a
+        # password once the same connection's CONNACK shows it was accepted.
+        awaiting_connack: dict[str, tuple[str, str]] = {}
         recovered_by_username: dict[str, str] = {}
         for raw_line in iter_log_lines(path):
-            line = str(raw_line or "")
-            if " CONNECT " not in line or " hex=" not in line:
+            match = _TRACE_LINE_RE.search(str(raw_line or ""))
+            if match is None:
                 continue
-            hex_value = line.rsplit(" hex=", 1)[-1].strip()
-            if not hex_value:
-                continue
+            conn_id = match.group("conn")
             try:
-                packet = bytes.fromhex(hex_value)
+                packet = bytes.fromhex(match.group("hex"))
             except ValueError:
                 continue
-            parsed = parse_mqtt_connect_packet(packet)
-            if parsed is None:
-                continue
-            username = _clean_str(parsed.get("username"))
-            password = _clean_str(parsed.get("password"))
-            if username in pending_usernames and password:
-                recovered_by_username[username] = password
+            if match.group("packet") == "CONNECT" and match.group("direction") == "c2b":
+                awaiting_connack.pop(conn_id, None)
+                parsed = parse_mqtt_connect_packet(packet)
+                if parsed is None:
+                    continue
+                username = _clean_str(parsed.get("username"))
+                password = _clean_str(parsed.get("password"))
+                if username in pending_usernames and password:
+                    awaiting_connack[conn_id] = (username, password)
+            elif match.group("packet") == "CONNACK" and match.group("direction") == "b2c":
+                pending = awaiting_connack.pop(conn_id, None)
+                # CONNACK is 0x20, remaining length, flags, then the return code.
+                if pending is not None and len(packet) >= 4 and packet[3] == 0:
+                    recovered_by_username[pending[0]] = pending[1]
 
         with self._lock:
             for username, password in recovered_by_username.items():

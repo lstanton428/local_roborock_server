@@ -444,7 +444,7 @@ def load_config(path: str | Path) -> AppConfig:
             password=str(turn.get("password", "")).strip(),
             realm=str(turn.get("realm", "") or turn.get("host", "")).strip(),
             ttl=_as_int(turn.get("ttl"), "turn.ttl", 86400),
-            denied_peer_ips=_as_trusted_proxies(turn.get("denied_peer_ips"), "turn.denied_peer_ips", ()),
+            denied_peer_ips=_as_ip_networks(turn.get("denied_peer_ips"), "turn.denied_peer_ips", ()),
         ),
     )
 

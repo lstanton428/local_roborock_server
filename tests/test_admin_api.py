@@ -29,8 +29,8 @@ def test_camera_bootstrap_preserves_firmware_contract_and_redacts_persisted_pass
         username="viewer", password="camera-test-secret", realm="turn.example.com"))
     paths = resolve_paths(config_file, config)
     supervisor = ReleaseSupervisor(config=config, paths=paths)
-    # TestClient requests come from "testclient"; register it as a connected vacuum.
-    supervisor.runtime_state.record_mqtt_connection(conn_id="robot", client_ip="testclient", client_port=1883)
+    # TestClient requests come from conftest's LAN address; register it as a connected vacuum.
+    supervisor.runtime_state.record_mqtt_connection(conn_id="robot", client_ip="192.168.1.50", client_port=1883)
     supervisor.runtime_state.record_mqtt_device_auth(conn_id="robot", did="1103821560705")
     client = TestClient(supervisor.app)
     response = client.post("/iot.roborock.com/fwapi/createca", json={})
@@ -54,7 +54,7 @@ def test_camera_bootstrap_withholds_turn_credentials_from_non_vacuum_clients(tmp
     paths = resolve_paths(config_file, config)
     supervisor = ReleaseSupervisor(config=config, paths=paths)
     # An MQTT session from the same address without device credentials (e.g. an app user).
-    supervisor.runtime_state.record_mqtt_connection(conn_id="app", client_ip="testclient", client_port=1883)
+    supervisor.runtime_state.record_mqtt_connection(conn_id="app", client_ip="192.168.1.50", client_port=1883)
     client = TestClient(supervisor.app)
     response = client.post("/iot.roborock.com/fwapi/createca", json={"did": "1103821560705"})
     assert response.status_code == 200

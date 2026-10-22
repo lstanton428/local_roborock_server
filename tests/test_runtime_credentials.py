@@ -284,3 +284,82 @@ def test_startup_skips_mqtt_password_backfill_when_new_connections_disabled(tmp_
     warnings = [record.getMessage() for record in caplog.records if "MQTT password recovery" in record.getMessage()]
     assert len(warnings) == 1
     assert "Q7 Upstairs" in warnings[0]
+
+
+def _write_single_device(credentials_path: Path, *, did: str) -> None:
+    credentials_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "devices": [
+                    {
+                        "did": did,
+                        "duid": "cloud-q7-a",
+                        "name": "Q7 Upstairs",
+                        "model": "roborock.vacuum.sc05",
+                        "product_id": "product-q7-a",
+                        "localkey": "local-key-a",
+                        "local_key_source": "inventory",
+                        "device_mqtt_usr": "",
+                        "device_mqtt_pass": "",
+                        "updated_at": "",
+                        "last_nc_at": "",
+                        "last_mqtt_seen_at": "",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_ensure_device_model_fallback_does_not_reuse_record_with_other_did(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _write_single_device(credentials_path, did="1103821560705")
+    store = RuntimeCredentialsStore(credentials_path)
+
+    created = store.ensure_device(
+        did="1103899999999",
+        model="roborock.vacuum.sc05",
+        local_key_source="onboarding_nc",
+        assign_localkey=True,
+    )
+
+    assert created["did"] == "1103899999999"
+    assert created["duid"] == ""
+    assert created["localkey"] not in ("", "local-key-a")
+    existing = store.resolve_device(did="1103821560705")
+    assert existing is not None
+    assert existing["duid"] == "cloud-q7-a"
+    assert existing["localkey"] == "local-key-a"
+    assert len(store.devices()) == 2
+    persisted = json.loads(credentials_path.read_text(encoding="utf-8"))
+    assert sorted(device["did"] for device in persisted["devices"]) == ["1103821560705", "1103899999999"]
+
+
+def test_resolve_device_model_fallback_ignores_record_with_other_did(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _write_single_device(credentials_path, did="1103821560705")
+    store = RuntimeCredentialsStore(credentials_path)
+
+    assert store.resolve_device(did="1103899999999", model="roborock.vacuum.sc05") is None
+    assert store.resolve_device(model="roborock.vacuum.sc05") is not None
+
+
+def test_ensure_device_model_fallback_adopts_record_without_did(tmp_path: Path) -> None:
+    credentials_path = tmp_path / "runtime_credentials.json"
+    _write_single_device(credentials_path, did="")
+    store = RuntimeCredentialsStore(credentials_path)
+
+    adopted = store.ensure_device(
+        did="1103821560705",
+        model="roborock.vacuum.sc05",
+        local_key_source="onboarding_nc",
+        assign_localkey=True,
+    )
+
+    assert adopted["did"] == "1103821560705"
+    assert adopted["duid"] == "cloud-q7-a"
+    assert adopted["localkey"] == "local-key-a"
+    assert len(store.devices()) == 1

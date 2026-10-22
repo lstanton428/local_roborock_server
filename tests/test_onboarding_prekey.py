@@ -104,3 +104,51 @@ def test_onboard_once_retries_hello_with_ssid_pre_key(monkeypatch: pytest.Monkey
 
     assert module.onboard_once(config, output, model="roborock.vacuum.a10") is True
     assert '"key": "0123456789abcdef"' in output.getvalue()
+
+
+@pytest.mark.parametrize("module", [start_onboarding, start_onboarding_gui])
+def test_onboard_once_redacts_wifi_password_and_token_t(monkeypatch: pytest.MonkeyPatch, module) -> None:
+    fake_socket = SimpleNamespace(
+        socket=SsidKeyOnlyVacuum,
+        AF_INET=socket.AF_INET,
+        SOCK_DGRAM=socket.SOCK_DGRAM,
+        timeout=socket.timeout,
+    )
+    monkeypatch.setattr(module, "socket", fake_socket)
+    monkeypatch.setattr(module, "gateway_mac", lambda _host: "b0:4a:39:3b:5f:1d")
+    sent_bodies: list[dict] = []
+    build_wifi_packet = module.build_wifi_packet
+
+    def record_wifi_packet(session_key: str, body: dict) -> bytes:
+        sent_bodies.append(body)
+        return build_wifi_packet(session_key, body)
+
+    monkeypatch.setattr(module, "build_wifi_packet", record_wifi_packet)
+    config = module.GuidedOnboardingConfig(
+        api_base_url="https://api-roborock.example.com",
+        stack_server="roborock.example.com/",
+        admin_password="admin",
+        ssid="Home",
+        password="wifi-secret-123",
+        timezone="Europe/Berlin",
+        cst="CET-1CEST,M3.5.0,M10.5.0/3",
+        country_domain="eu",
+    )
+    output = StringIO()
+
+    assert module.onboard_once(config, output, model="roborock.vacuum.a10") is True
+
+    [body] = sent_bodies
+    assert body["passwd"] == "wifi-secret-123"
+    token_t = body["token"]["t"]
+    assert token_t.startswith("T_TOKEN_")
+    printed = output.getvalue()
+    assert "wifi-secret-123" not in printed
+    assert token_t not in printed
+    assert "TOKEN_T=<redacted>\n" in printed
+    sent_line = next(line for line in printed.splitlines() if line.startswith("WIFI_BODY_SENT="))
+    printed_body = json.loads(sent_line.removeprefix("WIFI_BODY_SENT="))
+    assert printed_body["passwd"] == "<redacted>"
+    assert printed_body["token"]["t"] == "<redacted>"
+    assert printed_body["token"]["s"] == body["token"]["s"]
+    assert printed_body["ssid"] == "Home"

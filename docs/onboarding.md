@@ -70,11 +70,13 @@ The only required CLI flag is `--server`. The script will prompt for anything mi
 - `cst`: POSIX timezone string used by the vacuum firmware for local scheduling and clock synchronization (e.g. `EST5EDT,M3.2.0,M11.1.0` or `CET-1CEST,M3.5.0,M10.5.0/3`).
 - `country-domain`: The country or region code sent to the vacuum firmware in the local Wi-Fi configuration payload (e.g. `us`, `eu`, `de`, `at`, `gb`).
 
-You can still pass them explicitly if you prefer:
+You can pass the non-secret values explicitly if you prefer:
 
 ```bash
-uv run start_onboarding.py --server api-roborock.example.com --ssid "My Wifi" --password "Password123" --timezone "America/New_York" --cst EST5EDT,M3.2.0,M11.1.0 --country-domain us
+uv run start_onboarding.py --server api-roborock.example.com --ssid "My Wifi" --timezone "America/New_York" --cst EST5EDT,M3.2.0,M11.1.0 --country-domain us
 ```
+
+Let the script prompt for the admin and Wi-Fi passwords; the prompts do not echo them. `--admin-password` and `--password` still work, but values passed on the command line end up in your shell history and are visible to other users in the process list. The script prints the Wi-Fi payload it sends with the password and the `t` token redacted.
 
 `server` should be your real stack hostname, usually the same `api-...` hostname you use for `/admin`. If you omit the port, the CLI assumes `:555`. Explicit ports are supported, so if your admin page is at `https://api-roborock.example.com:8443/admin`, use `--server api-roborock.example.com:8443`.
 

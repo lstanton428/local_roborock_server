@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 import gmpy2  # type: ignore
 
 from .data_helpers import utcnow_iso
+from .io_utils import atomic_write_text
 
 
 LOG = logging.getLogger("real_stack.device_key_recovery")
@@ -522,24 +523,17 @@ class DeviceKeyCache:
 
         payload = {"devices": devices}
         payload_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-        tmp = self._state_tmp_file()
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(payload_text, encoding="utf-8")
 
         for attempt in range(SAVE_REPLACE_RETRIES):
             try:
-                tmp.replace(self.state_file)
+                atomic_write_text(self.state_file, payload_text)
                 return
             except PermissionError:
                 if attempt + 1 < SAVE_REPLACE_RETRIES:
                     time.sleep(SAVE_REPLACE_RETRY_SEC)
                     continue
-                break
-        self.state_file.write_text(payload_text, encoding="utf-8")
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+                raise
 
     def _save_safe_locked(self) -> None:
         try:

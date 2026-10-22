@@ -28,6 +28,7 @@ from .backend import (
     _normalize_value_map,
 )
 from shared.inventory_io import atomic_write_inventory, inventory_transaction
+from shared.io_utils import atomic_write_text
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -196,7 +197,7 @@ class CloudImportManager:
             )
 
             atomic_write_inventory(self.inventory_path, normalized_inventory)
-        self.snapshot_path.write_text(json.dumps(normalized_snapshot, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(self.snapshot_path, json.dumps(normalized_snapshot, indent=2) + "\n")
 
         with self._lock:
             self._sessions.pop(normalized_session_id, None)

@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 from roborock_local_server.log_retention import iter_log_lines
 
 from .data_helpers import secret_equals, utcnow_iso
+from .io_utils import atomic_write_text
 
 
 # Anchored to setup_file_logger's "<asctime> [<level>] <message>" format so text
@@ -278,7 +279,7 @@ class RuntimeCredentialsStore:
         payload["updated_at"] = utcnow_iso()
         payload["devices"] = self.devices()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(self.path, json.dumps(payload, indent=2) + "\n")
 
     def bootstrap_value(self, key: str, default: Any = "") -> Any:
         with self._lock:

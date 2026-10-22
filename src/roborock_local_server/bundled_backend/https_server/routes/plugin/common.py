@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 from fastapi.responses import Response
@@ -21,6 +21,8 @@ PLUGIN_PROXY_ALLOWED_HOSTS = {
 }
 
 PLUGIN_PROXY_MAX_BYTES = 32 * 1024 * 1024
+PLUGIN_PROXY_MAX_REDIRECTS = 5
+PLUGIN_PROXY_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 LEGACY_CATEGORY_PLUGIN_SOURCES = {
     "robot_vacuum_cleaner": "https://files.roborock.com/iot/plugin/979bb22f91a24f10a8bafe232b4fb5ee.zip",
@@ -209,20 +211,33 @@ def plugin_cache_path(runtime_dir: Path, source_url: str) -> Path:
 async def download_plugin_zip(source_url: str) -> tuple[bytes, str]:
     timeout = aiohttp.ClientTimeout(total=45)
     headers = {"User-Agent": "roborock-local-server/0.1"}
+    url = source_url
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(source_url, allow_redirects=True) as response:
-            status = int(response.status)
-            if status != 200:
-                raise RuntimeError(f"upstream returned HTTP {status}")
-            data = await response.read()
-            if not data:
-                raise RuntimeError("upstream returned empty content")
-            if len(data) > PLUGIN_PROXY_MAX_BYTES:
-                raise RuntimeError(
-                    f"plugin too large: {len(data)} bytes exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit"
-                )
-            content_type = str(response.headers.get("Content-Type") or "application/zip").strip()
-            return data, content_type
+        # Follow redirects by hand so every hop must stay on an allowed plugin host.
+        for _hop in range(PLUGIN_PROXY_MAX_REDIRECTS + 1):
+            async with session.get(url, allow_redirects=False) as response:
+                status = int(response.status)
+                if status in PLUGIN_PROXY_REDIRECT_STATUSES:
+                    location = str(response.headers.get("Location") or "").strip()
+                    if not location:
+                        raise RuntimeError(f"upstream returned HTTP {status} without a Location")
+                    next_url = urljoin(url, location)
+                    if not is_allowed_plugin_source(next_url):
+                        raise RuntimeError(f"upstream redirected to a disallowed host: {urlparse(next_url).hostname}")
+                    url = next_url
+                    continue
+                if status != 200:
+                    raise RuntimeError(f"upstream returned HTTP {status}")
+                data = await response.read()
+                if not data:
+                    raise RuntimeError("upstream returned empty content")
+                if len(data) > PLUGIN_PROXY_MAX_BYTES:
+                    raise RuntimeError(
+                        f"plugin too large: {len(data)} bytes exceeds {PLUGIN_PROXY_MAX_BYTES} byte limit"
+                    )
+                content_type = str(response.headers.get("Content-Type") or "application/zip").strip()
+                return data, content_type
+    raise RuntimeError(f"upstream redirected more than {PLUGIN_PROXY_MAX_REDIRECTS} times")
 
 
 async def plugin_proxy_response(*, runtime_dir: Path, source_url: str) -> Response:

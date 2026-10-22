@@ -1,8 +1,10 @@
+import asyncio
 import json
 import urllib.parse
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from conftest import write_release_config
 from roborock_local_server.config import load_config, resolve_paths
@@ -189,3 +191,100 @@ def test_non_plugin_routes_still_resolve_to_same_handlers(tmp_path: Path) -> Non
     )
     assert route_name == "user_info"
     assert payload["code"] == 200
+
+
+class _FakePluginResponse:
+    def __init__(self, status: int, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
+        self.status = status
+        self.headers = headers or {}
+        self._body = body
+
+    async def __aenter__(self) -> "_FakePluginResponse":
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+class _FakePluginSession:
+    def __init__(self, responses: dict[str, _FakePluginResponse], requested: list[str]) -> None:
+        self._responses = responses
+        self._requested = requested
+
+    async def __aenter__(self) -> "_FakePluginSession":
+        return self
+
+    async def __aexit__(self, *exc_info) -> bool:
+        return False
+
+    def get(self, url: str, *, allow_redirects: bool) -> _FakePluginResponse:
+        assert allow_redirects is False
+        self._requested.append(url)
+        return self._responses[url]
+
+
+def _patch_plugin_session(monkeypatch, responses: dict[str, _FakePluginResponse]) -> list[str]:
+    from https_server.routes.plugin import common as plugin_common
+
+    requested: list[str] = []
+    monkeypatch.setattr(
+        plugin_common.aiohttp,
+        "ClientSession",
+        lambda **_kwargs: _FakePluginSession(responses, requested),
+    )
+    return requested
+
+
+def test_plugin_download_follows_redirects_between_allowed_hosts(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    requested = _patch_plugin_session(
+        monkeypatch,
+        {
+            "https://files.roborock.com/iot/plugin/a.zip": _FakePluginResponse(
+                302, {"Location": "https://app-files.roborock.com/iot/plugin/a.zip"}
+            ),
+            "https://app-files.roborock.com/iot/plugin/a.zip": _FakePluginResponse(
+                301, {"Location": "/iot/plugin/b.zip"}
+            ),
+            "https://app-files.roborock.com/iot/plugin/b.zip": _FakePluginResponse(
+                200, {"Content-Type": "application/zip"}, b"zip-bytes"
+            ),
+        },
+    )
+
+    data, content_type = asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+
+    assert data == b"zip-bytes"
+    assert content_type == "application/zip"
+    assert requested[-1] == "https://app-files.roborock.com/iot/plugin/b.zip"
+
+
+def test_plugin_download_refuses_redirect_to_disallowed_host(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    requested = _patch_plugin_session(
+        monkeypatch,
+        {
+            "https://files.roborock.com/iot/plugin/a.zip": _FakePluginResponse(
+                302, {"Location": "http://169.254.169.254/latest/meta-data/"}
+            ),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="disallowed host"):
+        asyncio.run(plugin_common.download_plugin_zip("https://files.roborock.com/iot/plugin/a.zip"))
+    assert requested == ["https://files.roborock.com/iot/plugin/a.zip"]
+
+
+def test_plugin_download_limits_redirect_chains(monkeypatch) -> None:
+    from https_server.routes.plugin import common as plugin_common
+
+    loop_url = "https://files.roborock.com/iot/plugin/loop.zip"
+    _patch_plugin_session(monkeypatch, {loop_url: _FakePluginResponse(302, {"Location": loop_url})})
+
+    with pytest.raises(RuntimeError, match="redirected more than"):
+        asyncio.run(plugin_common.download_plugin_zip(loop_url))

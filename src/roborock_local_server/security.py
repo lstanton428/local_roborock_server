@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 import base64
 import hashlib
@@ -121,3 +123,61 @@ class AdminSessionManager:
             return None
         return SessionClaims(issued_at=issued_at, expires_at=expires_at)
 
+
+
+class LoginThrottle:
+    """Back off repeated failed logins per client and across all clients.
+
+    Each client gets a few free failures, then must wait an exponentially
+    growing delay before the next attempt. A global failure budget bounds
+    guessing spread across many addresses; the 6-digit protocol PIN only has a
+    million values, so per-address limits alone are not enough.
+    """
+
+    def __init__(
+        self,
+        *,
+        free_failures: int = 5,
+        max_delay_seconds: float = 900.0,
+        global_failures_per_window: int = 60,
+        global_window_seconds: float = 3600.0,
+        max_tracked_clients: int = 4096,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._free_failures = free_failures
+        self._max_delay = max_delay_seconds
+        self._global_limit = global_failures_per_window
+        self._global_window = global_window_seconds
+        self._max_tracked = max_tracked_clients
+        self._clock = clock
+        self._clients: dict[str, tuple[int, float]] = {}
+        self._global_failures: deque[float] = deque()
+
+    def retry_after(self, client: str) -> float:
+        """Seconds the client must wait before trying again, or 0 if allowed."""
+        now = self._clock()
+        self._expire_global(now)
+        waits = [0.0]
+        if len(self._global_failures) >= self._global_limit:
+            waits.append(self._global_failures[0] + self._global_window - now)
+        failures, last_failure = self._clients.get(client, (0, 0.0))
+        if failures >= self._free_failures:
+            delay = min(2.0 ** (failures - self._free_failures), self._max_delay)
+            waits.append(last_failure + delay - now)
+        return max(waits)
+
+    def record_failure(self, client: str) -> None:
+        now = self._clock()
+        failures, _last_failure = self._clients.pop(client, (0, 0.0))
+        self._clients[client] = (failures + 1, now)
+        self._global_failures.append(now)
+        self._expire_global(now)
+        while len(self._clients) > self._max_tracked:
+            self._clients.pop(next(iter(self._clients)))
+
+    def record_success(self, client: str) -> None:
+        self._clients.pop(client, None)
+
+    def _expire_global(self, now: float) -> None:
+        while self._global_failures and self._global_failures[0] <= now - self._global_window:
+            self._global_failures.popleft()

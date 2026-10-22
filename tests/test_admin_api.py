@@ -1576,3 +1576,19 @@ def test_execute_scene_hydrates_missing_zone_ranges_from_mqtt(tmp_path: Path) ->
     persisted_outer = json.loads(scene["param"])
     persisted_step = json.loads(persisted_outer["action"]["items"][0]["param"])
     assert persisted_step["params"]["data"][0]["zones"][0]["range"] == [32800, 22750, 34550, 25350]
+
+
+def test_admin_login_is_throttled_after_repeated_wrong_passwords(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app)
+
+    for _ in range(5):
+        assert client.post("/admin/api/login", json={"password": "wrong"}).status_code == 401
+
+    throttled = client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+    assert throttled.status_code == 429
+    assert int(throttled.headers["Retry-After"]) >= 1
+    assert "Too many failed sign-in attempts" in throttled.json()["error"]
+    assert supervisor.session_manager.cookie_name not in throttled.cookies

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import math
 from pathlib import Path
 import secrets
 import signal
@@ -63,7 +64,7 @@ from https_server.routes.auth.service import (
     with_current_server_urls,
 )
 from .bundled_backend.shared.zone_ranges_store import ZoneRangesStore
-from .security import AdminSessionManager, derive_protocol_sync_secret, verify_password
+from .security import AdminSessionManager, LoginThrottle, derive_protocol_sync_secret, verify_password
 
 
 ALL_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
@@ -454,6 +455,11 @@ class ReleaseSupervisor:
             ttl_seconds=config.admin.session_ttl_seconds,
             binding=config.admin.password_hash,
         )
+        self.admin_login_throttle = LoginThrottle()
+        self.protocol_login_throttle = LoginThrottle()
+        # Serializes password checks: bounds hashing CPU and makes throttle
+        # decisions see every earlier failure.
+        self.login_check_lock = asyncio.Lock()
         self.cloud_manager = CloudImportManager(
             inventory_path=self.paths.inventory_path,
             snapshot_path=self.paths.cloud_snapshot_path,
@@ -898,6 +904,14 @@ class ReleaseSupervisor:
         }
 
     @staticmethod
+    def _too_many_login_attempts_payload(retry_after: float) -> dict[str, Any]:
+        return {
+            "code": 2011,
+            "msg": "too_many_attempts",
+            "data": {"reason": "login_throttled", "retry_after": math.ceil(retry_after)},
+        }
+
+    @staticmethod
     def _unsupported_password_login_payload() -> dict[str, Any]:
         return {
             "code": 40031,
@@ -1008,6 +1022,7 @@ class ReleaseSupervisor:
     async def _handle_protocol_login_route(
         self,
         *,
+        client_ip: str,
         clean_path: str,
         query_params: dict[str, list[str]],
         body_params: dict[str, list[str]],
@@ -1020,47 +1035,67 @@ class ReleaseSupervisor:
             return "protocol_login_validate_code", 200, self._login_validate_success_payload()
 
         if self._is_code_submit_path(normalized):
-            account = _request_value(
-                query_params,
-                body_params,
-                "email",
-                "username",
-                "account",
-                "mobile",
-                "phone",
-            )
-            code = _request_value(
-                query_params,
-                body_params,
-                "code",
-                "verifyCode",
-                "verifycode",
-                "emailCode",
-                "smsCode",
-            )
-            if not self._protocol_login_email_matches(account):
-                status_code, payload = self._invalid_login_credentials_payload("invalid_login_email")
-                return "protocol_login_submit_code", status_code, payload
-            if not self._protocol_login_pin_matches(code):
-                status_code, payload = self._invalid_login_credentials_payload("invalid_login_pin")
-                return "protocol_login_submit_code", status_code, payload
-            try:
-                issued_user_data = self.protocol_auth.issue_local_session(
-                    self._protocol_login_identity(),
-                    source="protocol_code_login",
+            async with self.login_check_lock:
+                return await self._submit_protocol_login_code(
+                    client_ip=client_ip,
+                    query_params=query_params,
+                    body_params=body_params,
                 )
-            except ValueError as exc:
-                return "protocol_login_submit_code", 400, {
-                    "code": 40023,
-                    "msg": "local_session_issue_failed",
-                    "data": {"error": str(exc)},
-                }
-            return "protocol_login_submit_code", 200, build_login_data_response(self.context, issued_user_data)
 
         if self._is_password_login_path(normalized) or self._is_password_reset_path(normalized):
             return "protocol_login_password_unsupported", 400, self._unsupported_password_login_payload()
 
         return None
+
+    async def _submit_protocol_login_code(
+        self,
+        *,
+        client_ip: str,
+        query_params: dict[str, list[str]],
+        body_params: dict[str, list[str]],
+    ) -> tuple[str, int, dict[str, Any]]:
+        retry_after = self.protocol_login_throttle.retry_after(client_ip)
+        if retry_after > 0:
+            return "protocol_login_submit_code", 429, self._too_many_login_attempts_payload(retry_after)
+        account = _request_value(
+            query_params,
+            body_params,
+            "email",
+            "username",
+            "account",
+            "mobile",
+            "phone",
+        )
+        code = _request_value(
+            query_params,
+            body_params,
+            "code",
+            "verifyCode",
+            "verifycode",
+            "emailCode",
+            "smsCode",
+        )
+        if not self._protocol_login_email_matches(account):
+            self.protocol_login_throttle.record_failure(client_ip)
+            status_code, payload = self._invalid_login_credentials_payload("invalid_login_email")
+            return "protocol_login_submit_code", status_code, payload
+        if not await asyncio.to_thread(self._protocol_login_pin_matches, code):
+            self.protocol_login_throttle.record_failure(client_ip)
+            status_code, payload = self._invalid_login_credentials_payload("invalid_login_pin")
+            return "protocol_login_submit_code", status_code, payload
+        self.protocol_login_throttle.record_success(client_ip)
+        try:
+            issued_user_data = self.protocol_auth.issue_local_session(
+                self._protocol_login_identity(),
+                source="protocol_code_login",
+            )
+        except ValueError as exc:
+            return "protocol_login_submit_code", 400, {
+                "code": 40023,
+                "msg": "local_session_issue_failed",
+                "data": {"error": str(exc)},
+            }
+        return "protocol_login_submit_code", 200, build_login_data_response(self.context, issued_user_data)
 
     async def _handle_roborock_request(self, request: Request) -> Response:
         host = (request.headers.get("host") or "").strip()
@@ -1244,6 +1279,7 @@ class ReleaseSupervisor:
             return JSONResponse(response_payload, status_code=status_code)
 
         custom_login = await self._handle_protocol_login_route(
+            client_ip=request.client.host if request.client else "",
             clean_path=clean_path,
             query_params=query_params,
             body_params=body_params,

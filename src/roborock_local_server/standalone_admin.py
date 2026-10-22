@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 from textwrap import dedent
 from typing import Any
 
@@ -322,8 +324,20 @@ def register_standalone_admin_routes(
         except json.JSONDecodeError:
             body = {}
         password = str((body or {}).get("password") or "")
-        if not verify_password(password, supervisor.config.admin.password_hash):
-            return JSONResponse({"error": "Invalid password"}, status_code=401)
+        client = request.client.host if request.client else ""
+        async with supervisor.login_check_lock:
+            retry_after = supervisor.admin_login_throttle.retry_after(client)
+            if retry_after > 0:
+                wait = math.ceil(retry_after)
+                return JSONResponse(
+                    {"error": f"Too many failed sign-in attempts. Try again in {wait} seconds.", "retry_after": wait},
+                    status_code=429,
+                    headers={"Retry-After": str(wait)},
+                )
+            if not await asyncio.to_thread(verify_password, password, supervisor.config.admin.password_hash):
+                supervisor.admin_login_throttle.record_failure(client)
+                return JSONResponse({"error": "Invalid password"}, status_code=401)
+            supervisor.admin_login_throttle.record_success(client)
         response = JSONResponse({"ok": True})
         response.set_cookie(
             supervisor.session_manager.cookie_name,

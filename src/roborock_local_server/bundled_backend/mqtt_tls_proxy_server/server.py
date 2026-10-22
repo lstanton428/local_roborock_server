@@ -26,6 +26,11 @@ from .topic_acl import DEFAULT_TOPIC_ACL_MODE, TOPIC_ACL_MODES, TopicAcl, extrac
 
 class MqttTlsProxy:
     _MAX_FIRST_PACKET_BYTES = 1024 * 1024
+    # Bound how long a client may spend on the TLS handshake and on sending its
+    # CONNECT, so silent or slow peers cannot hold a connection slot forever.
+    _HANDSHAKE_TIMEOUT_SECONDS = 10.0
+    _CONNECT_TIMEOUT_SECONDS = 10.0
+    _MAX_CLIENT_CONNECTIONS = 256
 
     def __init__(
         self,
@@ -80,6 +85,7 @@ class MqttTlsProxy:
         self._conn_topic_acls: dict[str, TopicAcl] = {}
         self._trace_queue: queue.Queue[tuple[str, str, bytes] | None] = queue.Queue()
         self._trace_thread: threading.Thread | None = None
+        self._client_slots = threading.BoundedSemaphore(self._MAX_CLIENT_CONNECTIONS)
         self._protocol_auth = (
             ProtocolAuthStore(
                 cloud_snapshot_path,
@@ -848,6 +854,7 @@ class MqttTlsProxy:
         if self.runtime_state is not None:
             self.runtime_state.record_mqtt_connection(conn_id=conn_id, client_ip=addr[0], client_port=addr[1])
         try:
+            tls_conn.settimeout(self._CONNECT_TIMEOUT_SECONDS)
             first_packet = self._read_first_packet(tls_conn)
             if first_packet is None:
                 self.logger.warning("[conn %s] client closed before MQTT CONNECT", conn_id)
@@ -893,6 +900,8 @@ class MqttTlsProxy:
                     self._send_connect_reject(conn_id, tls_conn, connect_info)
                     return
 
+            # The broker enforces the MQTT keepalive once the session is relayed.
+            tls_conn.settimeout(None)
             backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             backend.connect((self.backend_host, self.backend_port))
             self._register_conn_endpoints(conn_id, tls_conn, backend)
@@ -985,6 +994,22 @@ class MqttTlsProxy:
             raw_conn.close()
             return None
 
+    def _serve_client(
+        self,
+        raw_conn: socket.socket,
+        addr: tuple[str, int],
+        tls_ctx: ssl.SSLContext | None,
+    ) -> None:
+        # Runs on the per-client thread so a stalled handshake never blocks accept().
+        try:
+            raw_conn.settimeout(self._HANDSHAKE_TIMEOUT_SECONDS)
+            client_conn = self._accept_client_connection(raw_conn=raw_conn, addr=addr, tls_ctx=tls_ctx)
+            if client_conn is None:
+                return
+            self._handle_client(client_conn, addr)
+        finally:
+            self._client_slots.release()
+
     def _run(self) -> None:
         tls_ctx = self._build_tls_context() if self.tls_enabled else None
 
@@ -1005,10 +1030,21 @@ class MqttTlsProxy:
         while self._running:
             try:
                 raw_conn, addr = self._server_socket.accept()
-                client_conn = self._accept_client_connection(raw_conn=raw_conn, addr=addr, tls_ctx=tls_ctx)
-                if client_conn is None:
+                if not self._client_slots.acquire(blocking=False):
+                    self.logger.warning(
+                        "Rejecting MQTT connection from %s:%d: %d connections already open",
+                        addr[0],
+                        addr[1],
+                        self._MAX_CLIENT_CONNECTIONS,
+                    )
+                    raw_conn.close()
                     continue
-                threading.Thread(target=self._handle_client, args=(client_conn, addr), daemon=True).start()
+                try:
+                    threading.Thread(target=self._serve_client, args=(raw_conn, addr, tls_ctx), daemon=True).start()
+                except RuntimeError as exc:
+                    self._client_slots.release()
+                    raw_conn.close()
+                    self.logger.warning("Could not start MQTT client thread for %s:%d: %s", addr[0], addr[1], exc)
             except OSError as exc:
                 if not self._running:
                     break

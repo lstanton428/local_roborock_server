@@ -434,6 +434,68 @@ def test_authorize_connect_recovers_missing_known_device_mqtt_password(tmp_path)
     assert reject_reason == "invalid_mqtt_credentials"
 
 
+def test_authorize_connect_skips_password_recovery_when_new_connections_disabled(tmp_path) -> None:
+    cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
+    _seed_cloud_snapshot(cloud_snapshot_path)
+    runtime_credentials_path = tmp_path / "runtime_credentials.json"
+    _write_json(
+        runtime_credentials_path,
+        {
+            "schema_version": 2,
+            "mqtt_usr": "bootstrap-user",
+            "mqtt_passwd": "bootstrap-pass",
+            "mqtt_clientid": "bootstrap-client",
+            "devices": [
+                {
+                    "did": "1103821560705",
+                    "duid": "6HL2zfniaoYYV01CkVuhkO",
+                    "name": "Roborock Qrevo MaxV 2",
+                    "model": "roborock.vacuum.a87",
+                    "product_id": "5gUei3OIJIXVD3eD85Balg",
+                    "localkey": "xPd5Dr8CGGqtdDlH",
+                    "local_key_source": "inventory",
+                    "device_mqtt_usr": "c25b14ceac358d2a",
+                    "device_mqtt_pass": "",
+                    "updated_at": "2026-04-17T17:00:00+00:00",
+                    "last_nc_at": "",
+                    "last_mqtt_seen_at": "",
+                }
+            ],
+        },
+    )
+    from shared.runtime_credentials import RuntimeCredentialsStore
+
+    runtime_credentials = RuntimeCredentialsStore(runtime_credentials_path)
+    proxy = MqttTlsProxy(
+        cert_file=tmp_path / "fullchain.pem",
+        key_file=tmp_path / "privkey.pem",
+        listen_host="127.0.0.1",
+        listen_port=8883,
+        backend_host="127.0.0.1",
+        backend_port=1883,
+        localkey="test-local-key",
+        logger=logging.getLogger("test.mqtt_tls_proxy"),
+        decoded_jsonl=tmp_path / "decoded.jsonl",
+        cloud_snapshot_path=cloud_snapshot_path,
+        runtime_credentials=runtime_credentials,
+        new_connections_enabled=lambda: False,
+    )
+
+    authorized, reason, _info = proxy._authorize_connect_packet(
+        _build_connect_packet(
+            client_id="a012391cb5f8bc97",
+            username="c25b14ceac358d2a",
+            password="attacker-chosen-pass",
+        )
+    )
+
+    assert authorized is False
+    assert reason == "new_connections_disabled"
+    pending_device = runtime_credentials.resolve_device(duid="6HL2zfniaoYYV01CkVuhkO")
+    assert pending_device is not None
+    assert pending_device["device_mqtt_pass"] == ""
+
+
 def test_authorize_connect_accepts_unknown_device_credentials_only_for_matching_onboarding_session(tmp_path) -> None:
     cloud_snapshot_path = tmp_path / "cloud_snapshot.json"
     _seed_cloud_snapshot(cloud_snapshot_path)

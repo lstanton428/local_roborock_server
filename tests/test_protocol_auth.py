@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from conftest import write_release_config
 from roborock_local_server.config import load_config, resolve_paths
+from roborock_local_server.security import LoginThrottle
 from roborock_local_server.server import PROTOCOL_AUTH_SYNC_PATH, ReleaseSupervisor
 from https_server.routes.auth.service import load_cloud_user_data
 from shared.protocol_auth import ProtocolAuthStore, build_hawk_authorization
@@ -526,3 +527,22 @@ def test_local_issued_and_imported_sessions_coexist(tmp_path: Path) -> None:
         },
     )
     assert imported_hawk_response.status_code == 200
+
+
+def test_protocol_login_is_throttled_after_repeated_wrong_pins(tmp_path: Path) -> None:
+    supervisor, _paths = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+
+    for _ in range(5):
+        wrong = client.post("/api/v5/auth/email/login/code", json={"email": "user@example.com", "code": "000000"})
+        assert wrong.status_code == 401
+
+    throttled = client.post("/api/v5/auth/email/login/code", json={"email": "user@example.com", "code": "123456"})
+    assert throttled.status_code == 429
+    assert throttled.json()["msg"] == "too_many_attempts"
+    assert throttled.json()["data"]["retry_after"] >= 1
+
+    # Start a fresh throttle, as if the backoff period had passed.
+    supervisor.protocol_login_throttle = LoginThrottle()
+    accepted = client.post("/api/v5/auth/email/login/code", json={"email": "user@example.com", "code": "123456"})
+    assert accepted.status_code == 200

@@ -190,6 +190,8 @@ _SENSITIVE_LOG_FIELDS = frozenset(
 _SENSITIVE_REQUEST_LOG_FIELDS = _SENSITIVE_LOG_FIELDS | {"code", "pin"}
 # rriot.s / rriot.h / rriot.k are the Hawk session, Hawk key and MQTT key.
 _SENSITIVE_RRIOT_FIELDS = frozenset({"s", "h", "k"})
+# An unencrypted /nc reply hands the vacuum its localKey as "k".
+_SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE = {"nc_prepare": _SENSITIVE_LOG_FIELDS | {"k"}}
 
 
 def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
@@ -226,7 +228,10 @@ def _redact_http_trace_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if field in redacted:
             redacted[field] = _redact_for_log(redacted[field], sensitive=_SENSITIVE_REQUEST_LOG_FIELDS)
     if "response_json" in redacted:
-        redacted["response_json"] = _redact_for_log(redacted["response_json"])
+        redacted["response_json"] = _redact_for_log(
+            redacted["response_json"],
+            sensitive=_SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE.get(str(redacted.get("route") or ""), _SENSITIVE_LOG_FIELDS),
+        )
 
     query = redacted.get("query")
     if isinstance(query, dict) and query != entry.get("query"):

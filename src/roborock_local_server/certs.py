@@ -45,22 +45,49 @@ class CertificateManager:
             if not self.paths.key_file.exists():
                 raise FileNotFoundError(f"Provided TLS key not found: {self.paths.key_file}")
             return False
-        if not self._needs_refresh():
+        reason = self._refresh_reason()
+        if reason is None:
             return False
-        self._provision_or_renew()
+        try:
+            self._provision_or_renew()
+        except Exception as exc:
+            if reason != "names":
+                raise
+            # The installed certificate is still valid and still covers the
+            # stack hostname; only its names differ from the configuration.
+            # Keep serving it instead of failing startup. The renewal loop
+            # checks again later and retries the reissue.
+            LOG.warning(
+                "Could not reissue the TLS certificate for the configured names; "
+                "keeping the existing certificate until the next renewal check: %s",
+                exc,
+            )
+            return False
         return True
 
     def _needs_refresh(self) -> bool:
+        return self._refresh_reason() is not None
+
+    def _refresh_reason(self) -> str | None:
+        """Return why the certificate needs issuing, or None when it is current.
+
+        "names" means the certificate is valid and covers stack_fqdn but its names
+        differ from the configuration; every other reason must be fixed to serve.
+        """
         if not self.paths.cert_file.exists() or not self.paths.key_file.exists():
-            return True
+            return "missing"
         try:
             cert = x509.load_pem_x509_certificate(self.paths.cert_file.read_bytes())
         except Exception:
-            return True
+            return "missing"
         deadline = datetime.now(timezone.utc) + timedelta(days=self.config.tls.renew_days_before)
         if cert.not_valid_after_utc <= deadline:
-            return True
-        return not self._certificate_matches_configuration(cert)
+            return "expiring"
+        if self._certificate_matches_configuration(cert):
+            return None
+        if _names_cover(self._san_names(cert), self.config.network.stack_fqdn):
+            return "names"
+        return "uncovered"
 
     def _read_cloudflare_token(self) -> str:
         token = self.paths.cloudflare_token_file.read_text(encoding="utf-8").strip()
@@ -118,14 +145,27 @@ class CertificateManager:
             sensitive_values.append(cloudflare_token)
         return sensitive_values
 
-    def _certificate_matches_configuration(self, cert: x509.Certificate) -> bool:
+    @staticmethod
+    def _san_names(cert: x509.Certificate) -> set[str]:
         try:
             san_names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
                 x509.DNSName
             )
         except x509.ExtensionNotFound:
+            return set()
+        return {name.strip().lower() for name in san_names if name.strip()}
+
+    def _installed_certificate_names(self) -> set[str]:
+        try:
+            cert = x509.load_pem_x509_certificate(self.paths.cert_file.read_bytes())
+        except Exception:
+            return set()
+        return self._san_names(cert)
+
+    def _certificate_matches_configuration(self, cert: x509.Certificate) -> bool:
+        actual_domains = self._san_names(cert)
+        if not actual_domains:
             return False
-        actual_domains = {name.strip().lower() for name in san_names if name.strip()}
         _primary_domain, issue_domains = self._certificate_domains()
         expected_domains = {domain.strip().lower() for domain in issue_domains if domain.strip()}
         return actual_domains == expected_domains
@@ -198,7 +238,8 @@ class CertificateManager:
         )
         if not self.paths.cert_file.exists() or not self.paths.key_file.exists():
             raise RuntimeError("ACME completed without writing certificate files")
-        self._remove_superseded_wildcard_certificate(primary_domain)
+        if self.config.tls.acme_server == "zerossl" and not any(domain.startswith("*.") for domain in issue_domains):
+            self._remove_superseded_wildcard_certificate(primary_domain)
 
     def _remove_superseded_wildcard_certificate(self, primary_domain: str) -> None:
         """Delete acme.sh's copy of a wildcard certificate that exact names replaced.
@@ -208,7 +249,7 @@ class CertificateManager:
         keep a key for every subdomain on disk until it expires.
         """
         base_domain = self.config.tls.base_domain
-        if self.config.tls.wildcard or not base_domain or base_domain == primary_domain:
+        if not base_domain or base_domain == primary_domain:
             return
         for directory_name in (base_domain, f"{base_domain}_ecc"):
             domain_dir = self.paths.acme_dir / directory_name
@@ -220,13 +261,20 @@ class CertificateManager:
             if f"*.{base_domain}" not in conf_text:
                 continue
             shutil.rmtree(domain_dir, ignore_errors=True)
-            LOG.info("Removed superseded wildcard certificate for %s from %s", base_domain, domain_dir)
+            if domain_dir.exists():
+                LOG.warning(
+                    "Could not delete the superseded wildcard certificate and key for %s; remove %s manually",
+                    base_domain,
+                    domain_dir,
+                )
+            else:
+                LOG.warning("Deleted the superseded wildcard certificate and key for %s at %s", base_domain, domain_dir)
 
     def _certificate_domains(self) -> tuple[str, list[str]]:
         stack_fqdn = self.config.network.stack_fqdn
         if self.config.tls.acme_server == "actalis":
             return stack_fqdn, [stack_fqdn]
-        if self.config.tls.wildcard:
+        if self._use_wildcard():
             base_domain = self.config.tls.base_domain
             return base_domain, [base_domain, f"*.{base_domain}"]
         # Cover only the names the stack serves: the API hostname and the
@@ -239,3 +287,24 @@ class CertificateManager:
             names.append(token_host)
         names.extend(self.config.tls.extra_names)
         return stack_fqdn, list(dict.fromkeys(names))
+
+    def _use_wildcard(self) -> bool:
+        if self.config.tls.wildcard is not None:
+            return self.config.tls.wildcard
+        # Unset means auto: keep the base_domain plus *.base_domain shape that
+        # releases before tls.wildcard issued, so camera aliases under
+        # base_domain keep working after an upgrade. Other installs, including
+        # new ones, get exact names.
+        base_domain = self.config.tls.base_domain
+        if not base_domain:
+            return False
+        return self._installed_certificate_names() == {base_domain, f"*.{base_domain}"}
+
+
+def _names_cover(names: set[str], hostname: str) -> bool:
+    """Return whether certificate DNS names cover hostname, including one-label wildcards."""
+    hostname = hostname.strip().lower()
+    if hostname in names:
+        return True
+    _label, _dot, parent = hostname.partition(".")
+    return bool(parent) and f"*.{parent}" in names

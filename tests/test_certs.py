@@ -17,6 +17,7 @@ def _write_certificate(
     *,
     common_name: str,
     san_names: list[str],
+    valid_days: int = 30,
 ) -> None:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.now(timezone.utc)
@@ -27,7 +28,7 @@ def _write_certificate(
         .public_key(private_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(days=1))
-        .not_valid_after(now + timedelta(days=30))
+        .not_valid_after(now + timedelta(days=valid_days))
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(name) for name in san_names]), critical=False)
         .sign(private_key=private_key, algorithm=hashes.SHA256())
     )
@@ -526,6 +527,7 @@ base_domain = "example.com"
 email = "acme@example.com"
 cloudflare_token_file = "secrets/cloudflare_token"
 acme_server = "zerossl"
+wildcard = false
 
 [admin]
 password_hash = "pbkdf2_sha256$600000$abc$def"
@@ -553,7 +555,11 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
     assert called["value"] is True
 
 
-def _zerossl_manager(tmp_path: Path, *, wildcard: bool) -> tuple[CertificateManager, object, list[list[str]]]:
+def _zerossl_manager(
+    tmp_path: Path, *, wildcard: bool | None, acme_server: str = "zerossl"
+) -> tuple[CertificateManager, object, list[list[str]]]:
+    wildcard_line = "" if wildcard is None else f"wildcard = {'true' if wildcard else 'false'}"
+    eab_lines = 'acme_eab_kid = "kid-123"\nacme_eab_hmac_key = "hmac-456"' if acme_server == "actalis" else ""
     config_file = tmp_path / "config.toml"
     config_file.write_text(
         f"""
@@ -571,8 +577,9 @@ mode = "cloudflare_acme"
 base_domain = "example.com"
 email = "acme@example.com"
 cloudflare_token_file = "secrets/cloudflare_token"
-acme_server = "zerossl"
-wildcard = {"true" if wildcard else "false"}
+acme_server = "{acme_server}"
+{wildcard_line}
+{eab_lines}
 
 [admin]
 password_hash = "pbkdf2_sha256$600000$abc$def"
@@ -646,3 +653,136 @@ def test_failed_issuance_keeps_the_wildcard_certificate(tmp_path: Path) -> None:
         manager._provision_or_renew()
 
     assert wildcard_dir.exists()
+
+
+def test_actalis_issuance_keeps_the_wildcard_certificate(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=None, acme_server="actalis")
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+
+    manager._provision_or_renew()
+
+    assert calls[1][3:5] == ["-d", "api-roborock.example.com"]
+    assert wildcard_dir.exists()
+
+
+def test_superseded_wildcard_deletion_is_logged_with_its_path(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manager, paths, _calls = _zerossl_manager(tmp_path, wildcard=False)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+
+    with caplog.at_level(logging.WARNING, logger="roborock_local_server.certs"):
+        manager._provision_or_renew()
+
+    assert not wildcard_dir.exists()
+    assert any(
+        record.levelno == logging.WARNING and "Deleted" in record.getMessage() and str(wildcard_dir) in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_failed_wildcard_deletion_is_not_logged_as_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    manager, paths, _calls = _zerossl_manager(tmp_path, wildcard=False)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+    monkeypatch.setattr("roborock_local_server.certs.shutil.rmtree", lambda *_args, **_kwargs: None)
+
+    with caplog.at_level(logging.INFO, logger="roborock_local_server.certs"):
+        manager._provision_or_renew()
+
+    assert wildcard_dir.exists()
+    messages = [record.getMessage() for record in caplog.records]
+    assert not any("Deleted" in message or "Removed" in message for message in messages)
+    assert any("Could not delete" in message and str(wildcard_dir) in message for message in messages)
+
+
+def _install_certificate(paths: object, *, san_names: list[str], valid_days: int) -> bytes:
+    paths.cert_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_certificate(paths.cert_file, common_name=san_names[0], san_names=san_names, valid_days=valid_days)
+    paths.key_file.write_text("key", encoding="utf-8")
+    return paths.cert_file.read_bytes()
+
+
+def _fail_issue(manager: CertificateManager, calls: list[list[str]]) -> None:
+    def failing_run_acme(args: list[str]) -> None:
+        calls.append(list(args))
+        if "--issue" in args:
+            raise RuntimeError("ACME command failed")
+
+    manager._run_acme = failing_run_acme  # type: ignore[method-assign]
+
+
+def test_name_only_reissue_failure_keeps_serving_the_installed_certificate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=False)
+    installed = _install_certificate(paths, san_names=["example.com", "*.example.com"], valid_days=90)
+    _fail_issue(manager, calls)
+
+    with caplog.at_level(logging.WARNING, logger="roborock_local_server.certs"):
+        assert manager.ensure_certificate() is False
+
+    assert any(call[0] == "--issue" for call in calls)
+    assert paths.cert_file.read_bytes() == installed
+    assert any("keeping the existing certificate" in record.getMessage() for record in caplog.records)
+
+
+def test_expiring_certificate_reissue_failure_still_raises(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=False)
+    _install_certificate(paths, san_names=["example.com", "*.example.com"], valid_days=10)
+    _fail_issue(manager, calls)
+
+    with pytest.raises(RuntimeError, match="ACME command failed"):
+        manager.ensure_certificate()
+
+
+def test_reissue_failure_raises_when_certificate_does_not_cover_stack_fqdn(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=False)
+    _install_certificate(paths, san_names=["other.example.net"], valid_days=90)
+    _fail_issue(manager, calls)
+
+    with pytest.raises(RuntimeError, match="ACME command failed"):
+        manager.ensure_certificate()
+
+
+def test_missing_certificate_issue_failure_still_raises(tmp_path: Path) -> None:
+    manager, _paths, calls = _zerossl_manager(tmp_path, wildcard=False)
+    _fail_issue(manager, calls)
+
+    with pytest.raises(RuntimeError, match="ACME command failed"):
+        manager.ensure_certificate()
+
+
+def test_unset_wildcard_keeps_an_installed_wildcard_certificate(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=None)
+    _install_certificate(paths, san_names=["example.com", "*.example.com"], valid_days=90)
+    wildcard_dir = _write_acme_domain(paths.acme_dir, "example.com", "example.com", "*.example.com")
+
+    assert manager.ensure_certificate() is False
+    assert calls == []
+
+    manager._provision_or_renew()
+
+    assert calls[1][3:7] == ["-d", "example.com", "-d", "*.example.com"]
+    assert calls[2][:3] == ["--install-cert", "-d", "example.com"]
+    assert wildcard_dir.exists()
+
+
+def test_unset_wildcard_issues_exact_names_without_a_wildcard_certificate(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=None)
+    _install_certificate(paths, san_names=["api-roborock.example.com"], valid_days=90)
+
+    assert manager.ensure_certificate() is True
+
+    assert calls[1][3:7] == ["-d", "api-roborock.example.com", "-d", "roborock.example.com"]
+
+
+def test_forced_wildcard_replaces_an_exact_name_certificate(tmp_path: Path) -> None:
+    manager, paths, calls = _zerossl_manager(tmp_path, wildcard=True)
+    _install_certificate(paths, san_names=["api-roborock.example.com", "roborock.example.com"], valid_days=90)
+
+    assert manager.ensure_certificate() is True
+
+    assert calls[1][3:7] == ["-d", "example.com", "-d", "*.example.com"]
+

@@ -306,10 +306,60 @@ def test_write_config_from_home_assistant_options_cloudflare(tmp_path: Path) -> 
     assert parsed["tls"]["base_domain"] == "example.com"
     assert parsed["tls"]["email"] == "acme@example.com"
     assert parsed["tls"]["acme_server"] == "zerossl"
-    assert parsed["tls"]["wildcard"] is False
+    assert "wildcard" not in parsed["tls"]
+    assert "extra_names" not in parsed["tls"]
     assert parsed["admin"]["new_connections_window_minutes"] == 30
     assert parsed["tls"]["cloudflare_token_file"] == str(token_path)
     assert token_path.read_text(encoding="utf-8") == "cloudflare-token-123"
+    assert load_config(config_path).tls.wildcard is None
+
+
+def _cloudflare_options(**overrides: object) -> dict[str, object]:
+    return {
+        "stack_fqdn": "api-roborock.example.com",
+        "tls_mode": "cloudflare_acme",
+        "tls_base_domain": "example.com",
+        "tls_email": "acme@example.com",
+        "acme_server": "zerossl",
+        "cloudflare_token": "cloudflare-token-123",
+        "admin_password": "secret",
+        "protocol_login_email": "user@example.com",
+        "protocol_login_pin": "654321",
+        **overrides,
+    }
+
+
+def test_addon_renders_forced_wildcard_and_extra_names(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(
+        options_path,
+        _cloudflare_options(tls_wildcard=True, tls_extra_names=["Cam.Example.com", "cam2.example.net"]),
+    )
+
+    write_config_from_home_assistant_options(
+        options_path=options_path,
+        config_path=config_path,
+        cloudflare_token_path=tmp_path / "run" / "secrets" / "cloudflare_token",
+    )
+
+    config = load_config(config_path)
+    assert config.tls.wildcard is True
+    assert config.tls.extra_names == ("cam.example.com", "cam2.example.net")
+
+
+def test_addon_rejects_wildcard_extra_names(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(options_path, _cloudflare_options(tls_extra_names=["*.example.com"]))
+
+    with pytest.raises(ValueError, match="tls_extra_names cannot contain wildcard names"):
+        write_config_from_home_assistant_options(
+            options_path=options_path,
+            config_path=config_path,
+            cloudflare_token_path=tmp_path / "run" / "secrets" / "cloudflare_token",
+        )
+    assert not config_path.exists()
 
 
 def test_write_config_from_home_assistant_options_infers_cloudflare_acme_from_token(tmp_path: Path) -> None:

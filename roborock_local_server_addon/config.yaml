@@ -75,6 +75,7 @@ options:
   tls_mode: "provided"
   tls_base_domain: ""
   tls_wildcard: false
+  tls_extra_names: []
   tls_email: ""
   acme_server: "zerossl"
   acme_eab_kid: ""
@@ -107,6 +108,8 @@ schema:
   tls_mode: list(provided|cloudflare_acme)
   tls_base_domain: str
   tls_wildcard: bool?
+  tls_extra_names:
+    - str?
   tls_email: str
   acme_server: list(zerossl|actalis)
   acme_eab_kid: str

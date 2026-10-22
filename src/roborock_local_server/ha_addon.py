@@ -27,6 +27,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "log_backup_count": LoggingConfig.backup_count,
     "tls_mode": "provided",
     "tls_base_domain": "",
+    "tls_wildcard": False,
     "tls_email": "",
     "acme_server": "zerossl",
     "acme_eab_kid": "",
@@ -228,6 +229,7 @@ def _render_config_toml(
     if tls_mode not in {"provided", "cloudflare_acme"}:
         raise ValueError("tls_mode must be 'provided' or 'cloudflare_acme'")
     tls_base_domain = str(merged.get("tls_base_domain", "") or "").strip()
+    tls_wildcard = bool(merged.get("tls_wildcard", False))
     tls_email = str(merged.get("tls_email", "") or "").strip()
     acme_server = _normalize_acme_server(merged.get("acme_server", "zerossl"), field_name="acme_server")
     acme_eab_kid = str(merged.get("acme_eab_kid", "") or "").strip()
@@ -342,6 +344,7 @@ def _render_config_toml(
                 "renew_days_before = 30",
                 "renew_check_seconds = 43200",
                 f"acme_server = {_toml_string(acme_server)}",
+                f"wildcard = {'true' if tls_wildcard else 'false'}",
                 'acme_eab_kid = ""',
                 'acme_eab_hmac_key = ""',
                 f"acme_eab_kid_file = {_toml_string(acme_eab_kid_file)}",

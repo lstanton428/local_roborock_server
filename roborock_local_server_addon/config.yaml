@@ -74,6 +74,7 @@ options:
   log_backup_count: 3
   tls_mode: "provided"
   tls_base_domain: ""
+  tls_wildcard: false
   tls_email: ""
   acme_server: "zerossl"
   acme_eab_kid: ""
@@ -102,6 +103,7 @@ schema:
   log_backup_count: int(0,20)?
   tls_mode: list(provided|cloudflare_acme)
   tls_base_domain: str
+  tls_wildcard: bool?
   tls_email: str
   acme_server: list(zerossl|actalis)
   acme_eab_kid: str

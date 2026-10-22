@@ -12,6 +12,22 @@ if src_str not in sys.path:
     sys.path.insert(0, src_str)
 
 from roborock_local_server.security import hash_password
+import fastapi.testclient
+import starlette.testclient
+
+
+class _LanTestClient(starlette.testclient.TestClient):
+    """TestClient whose requests come from a LAN address by default.
+
+    Starlette's default client host "testclient" is not an IP address, so the
+    admin network allowlist would reject it.
+    """
+
+    def __init__(self, *args, client: tuple[str, int] = ("192.168.1.50", 50000), **kwargs) -> None:
+        super().__init__(*args, client=client, **kwargs)
+
+
+fastapi.testclient.TestClient = _LanTestClient
 
 
 def write_release_config(

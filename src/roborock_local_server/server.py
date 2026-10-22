@@ -7,6 +7,7 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -16,7 +17,7 @@ import signal
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 import re
 from urllib.parse import parse_qs, urlencode
 
@@ -194,6 +195,39 @@ _SENSITIVE_REQUEST_LOG_FIELDS = _SENSITIVE_LOG_FIELDS | {"code", "pin"}
 _SENSITIVE_RRIOT_FIELDS = frozenset({"s", "h", "k"})
 # An unencrypted /nc reply hands the vacuum its localKey as "k".
 _SENSITIVE_RESPONSE_LOG_FIELDS_BY_ROUTE = {"nc_prepare": _SENSITIVE_LOG_FIELDS | {"k"}}
+
+
+def _is_admin_path(path: str) -> bool:
+    return path == "/admin" or path.startswith(("/admin/", "/ui/api/"))
+
+
+class AdminNetworkGuard:
+    """ASGI middleware that limits the admin dashboard to allowed client networks.
+
+    It checks scope["path"], the path the router matches. request.url is rebuilt
+    from the Host header, so a Host containing "#", "?" or "/" changes its path
+    without changing where the request is routed.
+    """
+
+    def __init__(self, app: Any, *, is_allowed: Callable[[str], bool]) -> None:
+        self.app = app
+        self._is_allowed = is_allowed
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            path = str(scope.get("path") or "")
+            root_path = str(scope.get("root_path") or "")
+            route_path = path[len(root_path):] if root_path and path.startswith(root_path) else path
+            if _is_admin_path(path) or _is_admin_path(route_path):
+                client = scope.get("client")
+                if not self._is_allowed(str(client[0]) if client else ""):
+                    response = JSONResponse(
+                        {"error": "The admin dashboard is not available from this network."},
+                        status_code=403,
+                    )
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
 
 
 def _headers_for_log(headers: dict[str, str]) -> dict[str, str]:
@@ -2008,8 +2042,23 @@ class ReleaseSupervisor:
                 return JSONResponse({"error": "Not Found"}, status_code=404)
             return await self._handle_roborock_request(request)
 
+    def _admin_client_allowed(self, client_host: str) -> bool:
+        try:
+            address = ipaddress.ip_address(client_host)
+        except ValueError:
+            return False
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return any(
+            address in ipaddress.ip_network(network, strict=False)
+            for network in self.config.admin.allowed_networks
+        )
+
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Roborock Local Server", docs_url=None, redoc_url=None, openapi_url=None)
+        # Added before ProxyHeadersMiddleware so it runs inside it and sees the
+        # forwarded client address from trusted proxies.
+        app.add_middleware(AdminNetworkGuard, is_allowed=self._admin_client_allowed)
         app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=list(self.config.network.trusted_proxies))
         if self.enable_standalone_admin:
             register_standalone_admin_routes(

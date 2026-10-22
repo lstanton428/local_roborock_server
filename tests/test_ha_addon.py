@@ -647,3 +647,47 @@ def test_empty_generated_turn_password_is_replaced_atomically(tmp_path, monkeypa
     write_config_from_home_assistant_options(options_path=options_path, config_path=tmp_path / "config.toml")
     assert replacements == [password_path]
     assert len(password_path.read_text()) >= 32
+
+
+def test_write_config_from_home_assistant_options_admin_allowed_networks(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(
+        options_path,
+        {
+            "stack_fqdn": "api-roborock.example.com",
+            "cert_file": "/ssl/fullchain.pem",
+            "key_file": "/ssl/privkey.pem",
+            "admin_password": "secret",
+            "protocol_login_email": "user@example.com",
+            "protocol_login_pin": "654321",
+            "admin_allowed_networks": ["192.168.8.0/24", " ", "100.64.0.0/10"],
+        },
+    )
+
+    write_config_from_home_assistant_options(
+        options_path=options_path,
+        config_path=config_path,
+        cloudflare_token_path=tmp_path / "cloudflare_token",
+    )
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["admin"]["allowed_networks"] == ["192.168.8.0/24", "100.64.0.0/10"]
+
+    _write_options(
+        options_path,
+        {
+            "stack_fqdn": "api-roborock.example.com",
+            "cert_file": "/ssl/fullchain.pem",
+            "key_file": "/ssl/privkey.pem",
+            "admin_password": "secret",
+            "protocol_login_email": "user@example.com",
+            "protocol_login_pin": "654321",
+        },
+    )
+    write_config_from_home_assistant_options(
+        options_path=options_path,
+        config_path=config_path,
+        cloudflare_token_path=tmp_path / "cloudflare_token",
+    )
+    assert "allowed_networks" not in tomllib.loads(config_path.read_text(encoding="utf-8"))["admin"]

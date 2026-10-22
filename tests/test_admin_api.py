@@ -1649,3 +1649,115 @@ def test_starting_onboarding_reopens_an_expired_window(tmp_path: Path, monkeypat
     assert supervisor.new_connections_enabled() is False
     supervisor.start_onboarding_session(new_vacuum=True)
     assert supervisor.new_connections_enabled() is True
+
+
+def test_admin_routes_are_limited_to_allowed_networks(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    public = TestClient(supervisor.app, client=("203.0.113.7", 40000))
+    for path in ("/admin", "/admin/", "/admin/api/status", "/ui/api/health"):
+        response = public.get(path)
+        assert response.status_code == 403, path
+        assert "not available from this network" in response.json()["error"]
+    assert public.post("/admin/api/login", json={"password": "correct horse battery staple"}).status_code == 403
+
+    # Protocol routes stay reachable; only the dashboard is limited.
+    assert public.post(
+        "/api/v5/auth/email/login/code",
+        json={"email": "user@example.com", "code": "123456"},
+    ).status_code == 200
+
+    for client_host in ("100.101.102.103", "127.0.0.1", "::ffff:192.168.1.20", "fd7a:115c:a1e0::1"):
+        allowed = TestClient(supervisor.app, client=(client_host, 40000))
+        assert allowed.get("/admin").status_code == 200, client_host
+
+
+def test_admin_allowed_networks_can_be_configured(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    config = replace(config, admin=replace(config.admin, allowed_networks=("192.168.8.0/24",)))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    assert TestClient(supervisor.app, client=("192.168.8.40", 1)).get("/admin").status_code == 200
+    assert TestClient(supervisor.app, client=("192.168.1.50", 1)).get("/admin").status_code == 403
+
+
+def test_admin_network_check_uses_forwarded_address_from_trusted_proxy(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    proxy = TestClient(supervisor.app, client=("127.0.0.1", 40000))
+
+    assert proxy.get("/admin", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 403
+    assert proxy.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 200
+
+    untrusted = TestClient(supervisor.app, client=("203.0.113.8", 40000))
+    assert untrusted.get("/admin", headers={"X-Forwarded-For": "192.168.1.9"}).status_code == 403
+
+
+def test_admin_network_check_ignores_crafted_host_headers(tmp_path: Path) -> None:
+    # Starlette rebuilds request.url from the Host header; a "#", "?" or "/" in
+    # it used to empty request.url.path while routing still reached /admin.
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    outside = TestClient(supervisor.app, client=("203.0.113.7", 40000))
+
+    for host in ("x#", "x?", "x/y", "api-roborock.example.com"):
+        response = outside.get("/admin/api/status", headers={"Host": host})
+        assert response.status_code == 403, host
+        login = outside.post(
+            "/admin/api/login",
+            json={"password": "correct horse battery staple"},
+            headers={"Host": host},
+        )
+        assert login.status_code == 403, host
+        assert "set-cookie" not in login.headers, host
+
+
+def test_admin_network_check_rejects_non_ip_clients_and_range_edges(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+
+    for client_host in ("testclient", "", "100.63.255.255", "100.128.0.1", "169.254.1.1", "0.0.0.0"):
+        response = TestClient(supervisor.app, client=(client_host, 1)).get("/admin")
+        assert response.status_code == 403, client_host
+    for client_host in ("100.64.0.1", "100.127.255.254", "172.30.32.2", "fe80::1"):
+        assert TestClient(supervisor.app, client=(client_host, 1)).get("/admin").status_code == 200, client_host
+
+
+def test_admin_network_check_covers_root_path_mounts(tmp_path: Path) -> None:
+    import asyncio
+
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/mounted/admin/api/status",
+        "raw_path": b"/mounted/admin/api/status",
+        "root_path": "/mounted",
+        "query_string": b"",
+        "headers": [(b"host", b"api-roborock.example.com")],
+        "client": ("203.0.113.7", 40000),
+        "server": ("127.0.0.1", 555),
+    }
+    asyncio.run(supervisor.app(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 403

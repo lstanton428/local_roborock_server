@@ -151,6 +151,10 @@ New connections (Home Assistant or app logins, onboarding, and a vacuum's first 
 
 1. Open the admin dashboard at `https://api-roborock.example.com:555/admin` by default, or `https://api-roborock.example.com:YOUR_HTTPS_PORT/admin` if you chose a custom HTTPS port.
 
+   The dashboard only answers clients on loopback, private LAN ranges and Tailscale's `100.64.0.0/10`; anything else gets HTTP 403. Set `admin.allowed_networks` (`admin_allowed_networks` in the add-on) to change that list. The Roborock API on the same port is not affected.
+
+   The defaults include every private range, so a vacuum or other IoT device on a separate private VLAN can still reach the dashboard. If your IoT devices use their own subnet, list only your trusted subnets, for example `["192.168.1.0/24", "100.64.0.0/10", "127.0.0.0/8"]`. The check sees the address the server receives: with Docker Desktop, rootless Docker or a userland port proxy every client can appear as the Docker gateway (`172.17.0.1` or similar), and a tunnel or proxy on the same host that does not send `X-Forwarded-For` appears as `127.0.0.1`. In those setups the allowlist cannot tell clients apart.
+
 2. If the page does not load, check the container and DNS before onboarding:
 
    ```bash

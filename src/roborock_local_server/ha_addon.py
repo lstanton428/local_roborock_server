@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "protocol_login_email": "",
     "protocol_login_pin": "",
     "new_connections_window_minutes": 30,
+    "admin_allowed_networks": [],
     "turn_mode": "disabled",
     "turn_host": "",
     "turn_port": 3478,
@@ -141,6 +143,22 @@ def _as_window_minutes(value: object) -> int:
     if minutes < 0:
         raise ValueError("new_connections_window_minutes must be 0 or greater")
     return minutes
+
+
+def _as_network_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError("admin_allowed_networks must be a list of IP addresses or CIDR networks")
+    networks: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        try:
+            ipaddress.ip_network(text, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"admin_allowed_networks entry {text!r} is not a valid IP address or CIDR network") from exc
+        networks.append(text)
+    return networks
 
 
 def _require_pin(value: object, *, field_name: str) -> str:
@@ -277,6 +295,7 @@ def _render_config_toml(
     new_connections_enabled = True
     new_connections_window_minutes = _as_window_minutes(merged.get("new_connections_window_minutes", 30))
     protocol_login_email = _require_email(merged.get("protocol_login_email"), field_name="protocol_login_email")
+    admin_allowed_networks = _as_network_list(merged.get("admin_allowed_networks") or [])
     protocol_login_pin = _require_pin(merged.get("protocol_login_pin"), field_name="protocol_login_pin")
 
     password_hash = _admin_password_hash(config_path, admin_password)
@@ -390,6 +409,11 @@ def _render_config_toml(
             f"protocol_auth_enabled = {_toml_bool(protocol_auth_enabled)}",
             f"new_connections_enabled = {_toml_bool(new_connections_enabled)}",
             f"new_connections_window_minutes = {new_connections_window_minutes}",
+            *(
+                [f"allowed_networks = [{', '.join(_toml_string(item) for item in admin_allowed_networks)}]"]
+                if admin_allowed_networks
+                else []
+            ),
             f"protocol_login_email = {_toml_string(protocol_login_email)}",
             f"protocol_login_pin_hash = {_toml_string(protocol_login_pin_hash)}",
             "",

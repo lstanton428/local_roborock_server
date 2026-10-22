@@ -90,6 +90,18 @@ class AdminConfig:
     # Minutes new connections stay allowed after startup or after an admin
     # turns them on; 0 keeps them allowed until turned off.
     new_connections_window_minutes: int = 30
+    # Client networks allowed to reach /admin and /ui/api. Defaults to
+    # loopback, private LAN ranges and the CGNAT range Tailscale uses.
+    allowed_networks: tuple[str, ...] = (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
 
 
 @dataclass(frozen=True)
@@ -377,6 +389,11 @@ def load_config(path: str | Path) -> AppConfig:
                 admin.get("new_connections_window_minutes"),
                 "admin.new_connections_window_minutes",
                 30,
+            ),
+            allowed_networks=_as_trusted_proxies(
+                admin.get("allowed_networks"),
+                "admin.allowed_networks",
+                AdminConfig.allowed_networks,
             ),
         ),
         turn=TurnConfig(

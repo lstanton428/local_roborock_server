@@ -525,8 +525,21 @@ class MqttTlsProxy:
         if packet_type in (12, 13):  # PINGREQ, PINGRESP
             return
         packet_name = MQTT_TYPES.get(packet_type, f"TYPE_{packet_type}")
-        preview = packet[:96].hex()
-        self.logger.info("[conn %s %s] %s len=%d hex=%s", conn_id, direction, packet_name, len(packet), preview)
+        if packet_type == 1:
+            # CONNECT carries the MQTT username and password; never log its bytes.
+            info = parse_mqtt_connect_packet(packet) or {}
+            self.logger.info(
+                "[conn %s %s] %s len=%d client_id=%s username=%s",
+                conn_id,
+                direction,
+                packet_name,
+                len(packet),
+                info.get("client_id") or "-",
+                info.get("username") or "-",
+            )
+        else:
+            preview = packet[:96].hex()
+            self.logger.info("[conn %s %s] %s len=%d hex=%s", conn_id, direction, packet_name, len(packet), preview)
 
         if packet_type == 1 and direction == "c2b":
             protocol_level = self._extract_connect_protocol_level(packet)

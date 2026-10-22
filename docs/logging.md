@@ -16,6 +16,18 @@ Console output remains available through Home Assistant's Logs tab or
 `docker logs`. Container console-log retention is managed separately by the
 container host. Changing console verbosity does not disable the JSONL files.
 
+## What is redacted
+
+The HTTP trace replaces login codes and PINs, passwords, tokens, local keys and
+the `rriot` session, Hawk and MQTT keys with `<redacted>`, in both requests and
+responses. The `Authorization`, `Cookie` and sync-secret headers are redacted
+too. When a request body contained one of these fields, the raw `body_b64` copy
+is dropped and `body_text` holds the redacted version.
+
+`mqtt_server.log` records each MQTT CONNECT by client ID and username only; the
+packet bytes, which include the MQTT password, are not logged. Logs written by
+older versions may still contain these values.
+
 ## Home Assistant
 
 Set these options in the add-on configuration, then restart it:

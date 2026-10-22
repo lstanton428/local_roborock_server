@@ -526,3 +526,42 @@ def test_local_issued_and_imported_sessions_coexist(tmp_path: Path) -> None:
         },
     )
     assert imported_hawk_response.status_code == 200
+
+
+def test_protocol_login_trace_redacts_pin_and_issued_credentials(tmp_path: Path) -> None:
+    supervisor, paths = _build_supervisor(tmp_path)
+    client = TestClient(supervisor.app)
+
+    login_response = client.post(
+        "/api/v5/auth/email/login/code?verifyCode=123456",
+        json={"email": "user@example.com", "code": "123456", "baseUrl": supervisor.context.api_url()},
+        headers={"Authorization": "Bearer something-secret"},
+    )
+    assert login_response.status_code == 200
+    issued = login_response.json()["data"]
+
+    trace = paths.http_jsonl_path.read_text(encoding="utf-8")
+    for secret_value in (
+        "123456",
+        "something-secret",
+        issued["token"],
+        issued["rriot"]["s"],
+        issued["rriot"]["h"],
+        issued["rriot"]["k"],
+    ):
+        assert secret_value not in trace
+
+    entry = next(
+        json.loads(line)
+        for line in trace.splitlines()
+        if line.strip() and json.loads(line).get("route") == "protocol_login_submit_code"
+    )
+    assert entry["body_redacted"] is True
+    assert "body_b64" not in entry
+    assert entry["body_json"]["code"] == "<redacted>"
+    assert entry["body_json"]["email"] == "user@example.com"
+    assert entry["query"]["verifyCode"] == "<redacted>"
+    assert entry["body_form"] == {"__json": [entry["body_text"]]}
+    assert "123456" not in entry["raw_path"]
+    assert entry["response_json"]["code"] == login_response.json()["code"]
+    assert entry["response_json"]["data"]["rriot"]["u"] == issued["rriot"]["u"]

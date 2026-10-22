@@ -150,7 +150,7 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
         raise AssertionError("Expected RuntimeError for missing Actalis EAB files")
 
 
-def test_certificate_manager_keeps_wildcard_shape_for_zerossl(tmp_path: Path) -> None:
+def test_certificate_manager_issues_exact_names_for_zerossl(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(
         """
@@ -201,6 +201,67 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
         "--dns",
         "dns_cf",
         "-d",
+        "api-roborock.example.com",
+        "-d",
+        "roborock.example.com",
+        "--keylength",
+        "2048",
+    ]
+    assert calls[2][:3] == ["--install-cert", "-d", "api-roborock.example.com"]
+
+
+def test_certificate_manager_keeps_wildcard_shape_when_requested(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "zerossl"
+wildcard = true
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.cloudflare_token_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.cloudflare_token_file.write_text("cloudflare-token", encoding="utf-8")
+    manager = CertificateManager(config=config, paths=paths)
+    calls: list[list[str]] = []
+
+    def fake_run_acme(args: list[str]) -> None:
+        calls.append(list(args))
+        if "--install-cert" in args:
+            paths.cert_file.parent.mkdir(parents=True, exist_ok=True)
+            paths.key_file.parent.mkdir(parents=True, exist_ok=True)
+            paths.cert_file.write_text("cert", encoding="utf-8")
+            paths.key_file.write_text("key", encoding="utf-8")
+
+    manager._run_acme = fake_run_acme  # type: ignore[method-assign]
+    manager._provision_or_renew()
+
+    assert calls[1] == [
+        "--issue",
+        "--dns",
+        "dns_cf",
+        "-d",
         "example.com",
         "-d",
         "*.example.com",
@@ -208,6 +269,69 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
         "2048",
     ]
     assert calls[2][:3] == ["--install-cert", "-d", "example.com"]
+
+
+def test_certificate_manager_adds_extra_names(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "zerossl"
+extra_names = ["Cam.Example.com", "roborock.example.com"]
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.cloudflare_token_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.cloudflare_token_file.write_text("cloudflare-token", encoding="utf-8")
+    manager = CertificateManager(config=config, paths=paths)
+    calls: list[list[str]] = []
+
+    def fake_run_acme(args: list[str]) -> None:
+        calls.append(list(args))
+        if "--install-cert" in args:
+            paths.cert_file.parent.mkdir(parents=True, exist_ok=True)
+            paths.key_file.parent.mkdir(parents=True, exist_ok=True)
+            paths.cert_file.write_text("cert", encoding="utf-8")
+            paths.key_file.write_text("key", encoding="utf-8")
+
+    manager._run_acme = fake_run_acme  # type: ignore[method-assign]
+    manager._provision_or_renew()
+
+    assert calls[1] == [
+        "--issue",
+        "--dns",
+        "dns_cf",
+        "-d",
+        "api-roborock.example.com",
+        "-d",
+        "roborock.example.com",
+        "-d",
+        "cam.example.com",
+        "--keylength",
+        "2048",
+    ]
+    assert calls[2][:3] == ["--install-cert", "-d", "api-roborock.example.com"]
 
 
 def test_run_acme_redacts_eab_credentials_in_logs_and_errors(
@@ -356,6 +480,52 @@ cloudflare_token_file = "secrets/cloudflare_token"
 acme_server = "actalis"
 acme_eab_kid = "kid-123"
 acme_eab_hmac_key = "hmac-456"
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.cert_file.parent.mkdir(parents=True, exist_ok=True)
+    paths.key_file.parent.mkdir(parents=True, exist_ok=True)
+    _write_certificate(paths.cert_file, common_name="example.com", san_names=["example.com", "*.example.com"])
+    paths.key_file.write_text("key", encoding="utf-8")
+    manager = CertificateManager(config=config, paths=paths)
+    called = {"value": False}
+
+    def fake_provision() -> None:
+        called["value"] = True
+
+    manager._provision_or_renew = fake_provision  # type: ignore[method-assign]
+
+    assert manager.ensure_certificate() is True
+    assert called["value"] is True
+
+
+def test_existing_wildcard_certificate_is_reissued_for_exact_names(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "zerossl"
 
 [admin]
 password_hash = "pbkdf2_sha256$600000$abc$def"

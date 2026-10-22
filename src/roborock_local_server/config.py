@@ -74,6 +74,8 @@ class TlsConfig:
     acme_eab_hmac_key_file: str
     cert_file: str
     key_file: str
+    wildcard: bool = False
+    extra_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,14 @@ def _as_timezone(value: object, field_name: str) -> str:
     return tz
 
 
+def _as_hostname_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of hostnames")
+    return tuple(_normalize_hostname(item, field_name) for item in value)
+
+
 def _as_bool(value: object, default: bool) -> bool:
     if value is None:
         return default
@@ -346,6 +356,8 @@ def load_config(path: str | Path) -> AppConfig:
             acme_eab_hmac_key_file=str(tls.get("acme_eab_hmac_key_file", "")).strip(),
             cert_file=str(tls.get("cert_file", "")).strip(),
             key_file=str(tls.get("key_file", "")).strip(),
+            wildcard=_as_bool(tls.get("wildcard"), False),
+            extra_names=_as_hostname_tuple(tls.get("extra_names"), "tls.extra_names"),
         ),
         admin=AdminConfig(
             password_hash=_require_non_empty(admin.get("password_hash"), "admin.password_hash"),

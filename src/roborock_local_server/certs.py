@@ -199,8 +199,19 @@ class CertificateManager:
             raise RuntimeError("ACME completed without writing certificate files")
 
     def _certificate_domains(self) -> tuple[str, list[str]]:
+        stack_fqdn = self.config.network.stack_fqdn
         if self.config.tls.acme_server == "actalis":
-            stack_fqdn = self.config.network.stack_fqdn
             return stack_fqdn, [stack_fqdn]
-        base_domain = self.config.tls.base_domain
-        return base_domain, [base_domain, f"*.{base_domain}"]
+        if self.config.tls.wildcard:
+            base_domain = self.config.tls.base_domain
+            return base_domain, [base_domain, f"*.{base_domain}"]
+        # Cover only the names the stack serves: the API hostname and the
+        # token.r hostname the vacuum is given (the API name without "api-"),
+        # which camera bootstrap uses on some models. A wildcard would let a
+        # leaked key impersonate every subdomain of the user's domain.
+        names = [stack_fqdn]
+        token_host = stack_fqdn.removeprefix("api-")
+        if token_host and "." in token_host:
+            names.append(token_host)
+        names.extend(self.config.tls.extra_names)
+        return stack_fqdn, list(dict.fromkeys(names))

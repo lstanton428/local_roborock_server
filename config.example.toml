@@ -46,6 +46,12 @@ cloudflare_token_file = "/run/secrets/cloudflare_token"
 renew_days_before = 30
 renew_check_seconds = 43200
 acme_server = "zerossl"
+# ZeroSSL certificates cover only the stack hostname and its token.r hostname
+# (the stack hostname without "api-"). Add any other names the vacuum must reach,
+# such as a separate camera domain, here. Set wildcard = true to issue
+# base_domain plus *.base_domain instead, as releases before this option did.
+# extra_names = ["cam.example.com"]
+# wildcard = false
 
 [admin]
 password_hash = "pbkdf2_sha256$600000$replace_me$replace_me"

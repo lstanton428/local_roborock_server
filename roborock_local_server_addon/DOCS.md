@@ -17,6 +17,7 @@ It publishes two TLS ports directly:
      - If using the official Home Assistant Let's Encrypt add-on, certificates are located in `/ssl` (e.g. `cert_file: /ssl/fullchain.pem` and `key_file: /ssl/privkey.pem`).
      - If using another add-on such as Nginx Proxy Manager, certificates are available under `/all_addon_configs/...` (e.g. `/all_addon_configs/a0d7b954_nginxproxymanager/letsencrypt/live/npm-3/fullchain.pem`).
    - `cloudflare_acme`: set `tls_base_domain`, `tls_email`, `cloudflare_token`
+     - With ZeroSSL the certificate covers only `stack_fqdn` and the same name without `api-`. Set `tls_wildcard: true` to issue `tls_base_domain` plus `*.tls_base_domain` instead, for example when the camera uses a different hostname.
 4. Start the add-on.
 
 For camera live view, set `turn_mode` to `provided` to start coturn inside the add-on. It uses `stack_fqdn` as the advertised host and generates a persistent password when `turn_password` is blank. Set `turn_mode` to `external` with `turn_host`, `turn_port`, `turn_username`, `turn_password`, and optionally `turn_realm` to advertise your existing relay. `disabled` leaves TURN off. In provided mode, allow UDP 3478 and 49160-49179 between the robot, viewer, and Home Assistant host.

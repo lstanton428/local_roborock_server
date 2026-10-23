@@ -106,7 +106,7 @@ schema:
   acme_server: list(zerossl|actalis)
   acme_eab_kid: str
   acme_eab_hmac_key: password
-  cloudflare_token: str
+  cloudflare_token: password
   cert_file: str
   key_file: str
   admin_password: password

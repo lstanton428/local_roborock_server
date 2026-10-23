@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1-hardened.3
+
+- **Open Web UI** now opens the admin dashboard on `stack_fqdn` (with `advertised_https_port`) instead of the hostname you opened Home Assistant with. It goes through Home Assistant ingress, so you can also show **Roborock** in the sidebar. The ingress page only answers Home Assistant's ingress proxy and holds nothing but the dashboard link.
+
 ## 1.2.1-hardened.2
 
 Fixes found while onboarding a Saros 10. Existing settings and paired vacuums keep working; no re-pairing is needed.

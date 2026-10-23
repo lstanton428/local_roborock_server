@@ -36,6 +36,16 @@ def test_logging_options_round_trip_from_addon_schema(tmp_path, addon):
     assert config.logging.backup_count == 0
 
 
+@pytest.mark.parametrize("addon", ["roborock_local_server_addon", "roborock_local_server_beta_addon"])
+def test_addon_masks_secret_options(addon):
+    schema = yaml.safe_load((Path(addon) / "config.yaml").read_text())["schema"]
+    secrets = ["acme_eab_hmac_key", "cloudflare_token", "admin_password", "protocol_login_pin", "turn_password"]
+    # Home Assistant shows str options in clear text; password options are masked.
+    masked = {key: schema[key].rstrip("?") for key in secrets if key in schema}
+    assert "cloudflare_token" in masked
+    assert masked == dict.fromkeys(masked, "password")
+
+
 @pytest.mark.parametrize("options", [{"log_max_size_mb": 0}, {"log_max_size_mb": 1.5},
                                     {"log_backup_count": -1}, {"log_backup_count": True}])
 def test_addon_rejects_invalid_logging_options_before_writing_config(tmp_path, options):

@@ -9,7 +9,7 @@ This page covers two separate Home Assistant tasks:
 
 This is an installation method, not a post-install integration step. The add-on uses the same container image as the Docker deployment:
 
-- `ghcr.io/python-roborock/local_roborock_server`
+- `ghcr.io/lstanton428/local_roborock_server` (built from this fork's `hardened` branch)
 
 Before configuring the add-on, check [Tested Vacuums](tested_vacuums.md).
 
@@ -26,7 +26,7 @@ For most users, prefer `acme_server = zerossl`. Use `actalis` mainly for older v
 1. Open the Home Assistant Add-on Store.
 2. Add this repository under **Repositories**:
 
-   - `https://github.com/Python-roborock/local_roborock_server`
+   - `https://github.com/lstanton428/local_roborock_server`
 
 3. Install **Roborock Local Server**.
 4. Fill the add-on options:
@@ -74,19 +74,19 @@ if you tested an RC using the Beta add-on.
 - The add-on terminates TLS itself and publishes two ports: HTTPS on `https_port` and MQTT/TLS on `mqtt_tls_port`.
 - Installing the add-on does **not** automatically configure or rewrite Home Assistant's Roborock integration entry.
 
-### Certificate Locations (When Using `tls_mode = provided`)
+### Certificates
 
-If you use `tls_mode = provided` with existing certificates managed in Home Assistant, the add-on container has access to mounted certificate directories:
+Prefer `tls_mode = cloudflare_acme`: the add-on issues and renews its own certificate, so it never needs access to other add-ons. Create the Cloudflare token with only **Zone → DNS → Edit** on the zone that holds `stack_fqdn`; see [Cloudflare setup](cloudflare_setup.md).
 
-- **Official Home Assistant Let's Encrypt Add-on**: Certificates are stored in `/ssl`. Point `cert_file` and `key_file` to the `/ssl` directory:
-  - `cert_file = /ssl/fullchain.pem`
-  - `key_file = /ssl/privkey.pem`
-- **Third-Party Certificate Add-ons (e.g., Nginx Proxy Manager)**: Certificate files are available through `/all_addon_configs/...`:
-  - `cert_file = /all_addon_configs/a0d7b954_nginxproxymanager/letsencrypt/live/npm-3/fullchain.pem`
-  - `key_file = /all_addon_configs/a0d7b954_nginxproxymanager/letsencrypt/live/npm-3/privkey.pem`
+With `tls_mode = provided`, copy the certificate and key into this add-on's config folder (`/addon_configs/<id>_roborock_local_server/` on the host) and set:
+
+- `cert_file = /config/fullchain.pem`
+- `key_file = /config/privkey.pem`
+
+This add-on mounts only its own config folder. It does not mount `/ssl`, which holds Home Assistant's own certificate and key, or `/all_addon_configs`, which exposes every other add-on's configuration and secrets. Renew provided certificates yourself and restart the add-on afterwards.
 
 > [!NOTE]
-> Nginx Proxy Manager is mainly useful here as a certificate source or admin/API HTTPS convenience; it does not remove the need for a reachable MQTT/TLS port. See [Reverse Proxy](reverse_proxy.md). Always verify whether your vacuum model trusts Let's Encrypt certificates or requires ZeroSSL/Actalis in [Tested Vacuums](tested_vacuums.md).
+> Always verify whether your vacuum model trusts Let's Encrypt certificates or requires ZeroSSL/Actalis in [Tested Vacuums](tested_vacuums.md).
 
 ## Connect Home Assistant to The Local Stack
 

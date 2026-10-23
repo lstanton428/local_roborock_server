@@ -1,6 +1,6 @@
 # Roborock Local Server
 
-This add-on runs the same `ghcr.io/python-roborock/local_roborock_server` image used for Docker installs.
+This add-on runs the `ghcr.io/lstanton428/local_roborock_server` image, built from the `hardened` branch of the lstanton428 fork, the same code used for Docker installs from that branch.
 
 It publishes two TLS ports directly:
 
@@ -14,8 +14,7 @@ It publishes two TLS ports directly:
 2. Set `admin_password`, `protocol_login_email`, and `protocol_login_pin` (6 digits).
 3. Choose TLS mode:
    - `provided`: set `cert_file` and `key_file`
-     - If using the official Home Assistant Let's Encrypt add-on, certificates are located in `/ssl` (e.g. `cert_file: /ssl/fullchain.pem` and `key_file: /ssl/privkey.pem`).
-     - If using another add-on such as Nginx Proxy Manager, certificates are available under `/all_addon_configs/...` (e.g. `/all_addon_configs/a0d7b954_nginxproxymanager/letsencrypt/live/npm-3/fullchain.pem`).
+     - Copy the certificate and key into this add-on's config folder (`/addon_configs/<id>_roborock_local_server/` on the host, shown as `/config` inside the add-on) and set `cert_file: /config/fullchain.pem` and `key_file: /config/privkey.pem`. This add-on does not mount `/ssl` or other add-ons' folders, so it cannot read Home Assistant's own certificate or other add-ons' secrets. Renew those files yourself and restart the add-on.
    - `cloudflare_acme`: set `tls_base_domain`, `tls_email`, `cloudflare_token`
      - With ZeroSSL a new certificate covers only `stack_fqdn` and the same name without `api-`. Add other hostnames, such as a separate camera domain, to `tls_extra_names`, or set `tls_wildcard: true` to issue `tls_base_domain` plus `*.tls_base_domain` instead. A wildcard certificate from an earlier release keeps its wildcard shape on renewal while `tls_wildcard` is off.
 4. Start the add-on.
@@ -57,7 +56,8 @@ for upgrade behavior and storage estimates.
 - New connections (app and Home Assistant logins, onboarding, and a vacuum's first connection) are allowed for `new_connections_window_minutes` (default 30) after the add-on starts, then close. Reopen them under **New Connections** in the admin dashboard before signing in or running the MITM sync. Starting an onboarding session reopens them as well, and they stay open while the session is being followed. `0` leaves them open until turned off. Turning them off in the dashboard is kept across add-on restarts.
 - If you change `https_port` or `mqtt_tls_port`, update your DNS/clients to use those ports.
 - The current server advertises the same hostname for HTTPS and MQTT/TLS, so Home Assistant's Roborock entry should normally use `ssl://api-roborock.example.com:8881`, not a separate `mqtt-...` hostname.
-- For `tls_mode: provided`, certificates from the official Home Assistant Let's Encrypt add-on are stored in `/ssl` (e.g. `/ssl/fullchain.pem` and `/ssl/privkey.pem`). If you manage certificates in another add-on such as Nginx Proxy Manager, you can point `cert_file` and `key_file` at that add-on's certs through `/all_addon_configs/...` (example: `/all_addon_configs/a0d7b954_nginxproxymanager/letsencrypt/live/npm-3/fullchain.pem`).
+- `tls_mode: cloudflare_acme` is the recommended mode: the add-on issues and renews its own certificate, so nothing has to be shared from other add-ons. Create the Cloudflare token with only **Zone → DNS → Edit** on the one zone that holds `stack_fqdn`.
+- For `tls_mode: provided`, place the files in this add-on's config folder and refer to them under `/config/...`; `/ssl` and other add-ons' folders are not mounted.
 - The admin dashboard only answers loopback, private LAN and Tailscale addresses unless `admin_allowed_networks` lists others. If a reverse proxy forwards to the add-on, add its address to `trusted_proxies` so the dashboard sees the real client; forwarded requests from any other address are refused.
 - If a reverse proxy exposes different public ports than the add-on listeners, keep `https_port`/`mqtt_tls_port` as the add-on listener ports and set `advertised_https_port`/`advertised_mqtt_tls_port` to the public ports. The proxy must preserve the original `Host` header, and MQTT/TLS still needs a reachable port or a TCP/stream proxy.
 

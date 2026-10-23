@@ -1,9 +1,9 @@
-name: Roborock Local Server
-version: "1.2.1"
+name: Roborock Local Server (hardened)
+version: "1.2.1-hardened.1"
 slug: roborock_local_server
 description: Private Roborock HTTPS and MQTT stack for Home Assistant environments.
-url: "https://github.com/Python-roborock/local_roborock_server"
-image: "ghcr.io/python-roborock/local_roborock_server"
+url: "https://github.com/lstanton428/local_roborock_server"
+image: "ghcr.io/lstanton428/local_roborock_server"
 startup: services
 boot: auto
 init: false
@@ -59,9 +59,9 @@ ports_description:
   49178/udp: TURN media relay
   49179/udp: TURN media relay
 map:
-  - ssl:ro
+  # Only this add-on's own config folder (/config). Certificates are issued by the
+  # add-on itself or placed in that folder; other add-ons' files are not mounted.
   - addon_config:rw
-  - all_addon_configs:ro
 webui: "https://[HOST]:[PORT:555]/admin"
 options:
   stack_fqdn: "api-roborock.example.com"

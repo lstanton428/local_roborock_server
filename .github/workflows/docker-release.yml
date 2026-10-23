@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: python-roborock/local_roborock_server
+  IMAGE_NAME: lstanton428/local_roborock_server
 
 permissions:
   contents: read
@@ -102,7 +102,15 @@ jobs:
               raise SystemExit(
                   f"Version mismatch: pyproject.toml={project_version}, __init__.py={module_version}"
               )
-          if tag != expected_tag:
+          # Fork releases are tagged v<package version>-hardened.<n>; the add-on
+          # version must match so Home Assistant pulls that image tag.
+          if re.fullmatch(re.escape(expected_tag) + r"-hardened\.\d+", tag):
+              addon_text = Path("roborock_local_server_addon/config.yaml").read_text(encoding="utf-8")
+              addon_match = re.search(r'^version:\s*"([^"]+)"', addon_text, re.M)
+              addon_version = addon_match.group(1) if addon_match else ""
+              if f"v{addon_version}" != tag:
+                  raise SystemExit(f"Git tag {tag} does not match add-on version v{addon_version}")
+          elif tag != expected_tag:
               raise SystemExit(f"Git tag {tag} does not match package version {expected_tag}")
 
       - name: Log in to GHCR
@@ -132,7 +140,7 @@ jobs:
             type=sha,prefix=sha-
           labels: |
             org.opencontainers.image.title=roborock-local-server
-            org.opencontainers.image.source=https://github.com/python-roborock/local_roborock_server
+            org.opencontainers.image.source=https://github.com/lstanton428/local_roborock_server
             org.opencontainers.image.description=Private Roborock HTTPS and MQTT stack for local LAN use
             org.opencontainers.image.licenses=MIT
 

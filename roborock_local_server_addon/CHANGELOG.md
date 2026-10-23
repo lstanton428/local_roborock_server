@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.1-hardened.1
+
+Security-hardened build of 1.2.1 from the lstanton428 fork (`hardened` branch). Existing settings, sessions and paired vacuums keep working; no re-pairing is needed.
+
+- The add-on no longer mounts `/ssl` or other add-ons' config folders. Use `tls_mode: cloudflare_acme`, or copy certificates into this add-on's config folder (`/config`).
+- ZeroSSL certificates cover only `stack_fqdn` and its token hostname instead of a wildcard (an existing wildcard certificate keeps its shape). Superseded wildcard keys are deleted.
+- New connections close 30 minutes after start (`new_connections_window_minutes`); reopen them in the dashboard before logins or onboarding.
+- Admin and PIN logins are rate-limited; the dashboard only answers local networks (`admin_allowed_networks`, `trusted_proxies`).
+- Login codes, tokens, local keys and MQTT passwords are kept out of logs; secret files are written owner-only.
+- Per-client MQTT topic permissions in audit mode (`mqtt_topic_acl`), MQTT handshake timeouts, and request size limits.
+- TURN credentials are only given to connected vacuums; plugin downloads and public-key recovery are bounded.
+
 ## 1.2.1
 
 - Fixed vacuums losing control about 48 hours after onboarding with `rrcheck access denied` (seen on the Qrevo Edge 2). The server now answers the firmware's periodic `/f/c` access check locally.

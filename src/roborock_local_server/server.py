@@ -36,6 +36,7 @@ from .product_registry import resolve_product_metadata
 from .bundled_backend.shared.runtime_state import ONBOARDING_STEP_LABELS, REQUIRED_ONBOARDING_STEPS
 from .cloud import CloudImportManager
 from .config import AppConfig, AppPaths, load_config, resolve_paths
+from .ingress import admin_dashboard_url, build_ingress_app
 from .log_retention import configure_jsonl_logging, log_paths
 from .turn_relay import EmbeddedTurnRelay
 from .standalone_admin import register_standalone_admin_routes
@@ -613,6 +614,7 @@ class ReleaseSupervisor:
         self._topic_bridge: MqttTopicBridge | None = None
         self._mqtt_proxy: MqttTlsProxy | None = None
         self._http_server: ManagedFastApiServer | None = None
+        self._ingress_server: ManagedFastApiServer | None = None
         self._renew_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -2284,6 +2286,18 @@ class ReleaseSupervisor:
         await self._http_server.start()
         self.runtime_state.set_service("https_server", running=True, required=True, enabled=True)
 
+    async def _start_ingress_server(self) -> None:
+        network = self.config.network
+        admin_url = admin_dashboard_url(network.stack_fqdn, network.advertised_https_port)
+        self._ingress_server = ManagedFastApiServer(
+            app=build_ingress_app(admin_url=admin_url),
+            bind_host=network.bind_host,
+            port=network.ingress_port,
+            tls_enabled=False,
+        )
+        await self._ingress_server.start()
+        self.root_logger.info("Home Assistant ingress page on port %d opens %s", network.ingress_port, admin_url)
+
     def _start_mqtt_proxy(self) -> None:
         cert_paths = self.certificate_manager.certificate_paths
         self._mqtt_proxy = MqttTlsProxy(
@@ -2377,6 +2391,8 @@ class ReleaseSupervisor:
 
         await self._start_http_server()
         self._start_mqtt_proxy()
+        if self.config.network.ingress_port:
+            await self._start_ingress_server()
 
         self.root_logger.info(
             "HTTPS server listening on %s:%d",
@@ -2425,6 +2441,9 @@ class ReleaseSupervisor:
             self.runtime_state.set_service("https_server", running=False, required=True, enabled=True)
             await self._http_server.stop()
             self._http_server = None
+        if self._ingress_server is not None:
+            await self._ingress_server.stop()
+            self._ingress_server = None
         self.runtime_state.set_service("mqtt_backend_broker", running=False, required=True, enabled=True)
         if self._broker is not None:
             await self._broker.shutdown()

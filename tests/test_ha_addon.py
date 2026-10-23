@@ -182,6 +182,21 @@ def test_write_config_from_home_assistant_options_reverse_proxy_settings(tmp_pat
     assert parsed["network"]["advertised_mqtt_tls_port"] == 8883
 
 
+def test_addon_opens_the_admin_dashboard_through_ingress(tmp_path: Path) -> None:
+    manifest = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())
+    # A webui link can only use the hostname Home Assistant was opened with, not stack_fqdn.
+    assert "webui" not in manifest
+    assert manifest["ingress"] is True
+    options = {**manifest["options"], "stack_fqdn": "api-roborock.example.com",
+               "cert_file": "cert", "key_file": "key", "admin_password": "secret",
+               "protocol_login_email": "user@example.com", "protocol_login_pin": "123456"}
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    _write_options(options_path, options)
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.ingress_port == manifest["ingress_port"]
+
+
 def test_write_config_from_home_assistant_options_provided_tls_requires_paths_when_blank(tmp_path: Path) -> None:
     options_path = tmp_path / "options.json"
     config_path = tmp_path / "config.toml"

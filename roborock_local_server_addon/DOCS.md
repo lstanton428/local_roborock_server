@@ -25,7 +25,7 @@ Before choosing the TLS mode, check the tested-vacuum certificate guidance in `d
 
 The add-on always runs the embedded MQTT broker and keeps the topic bridge enabled.
 
-Then open `https://api-roborock.example.com:555/admin` using your configured `stack_fqdn` and HTTPS port.
+Then open `https://api-roborock.example.com:555/admin` using your configured `stack_fqdn` and HTTPS port. **Open Web UI** (or the optional **Roborock** sidebar entry) takes you there: it goes through Home Assistant ingress to a page that opens the dashboard on `stack_fqdn` and `advertised_https_port`.
 
 After the dashboard opens:
 

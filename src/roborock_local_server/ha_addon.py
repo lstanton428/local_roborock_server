@@ -55,6 +55,8 @@ _HOST_RE = re.compile(r"^[a-z0-9.-]+$")
 DEFAULT_OPTIONS_PATH = Path("/data/options.json")
 DEFAULT_CONFIG_PATH = Path("/data/config.toml")
 DEFAULT_CLOUDFLARE_TOKEN_PATH = Path("/run/secrets/cloudflare_token")
+# Must match ingress_port in the add-on's config.yaml.
+INGRESS_PORT = 8099
 DEFAULT_ACME_EAB_KID_PATH = Path("/run/secrets/acme_eab_kid")
 DEFAULT_ACME_EAB_HMAC_KEY_PATH = Path("/run/secrets/acme_eab_hmac_key")
 
@@ -352,6 +354,7 @@ def _render_config_toml(
         f"mqtt_tls_port = {mqtt_tls_port}",
         f"advertised_https_port = {advertised_https_port}",
         f"advertised_mqtt_tls_port = {advertised_mqtt_tls_port}",
+        f"ingress_port = {INGRESS_PORT}",
         f"region = {_toml_string(region)}",
         *(
             [f"trusted_proxies = [{', '.join(_toml_string(item) for item in trusted_proxies)}]"]

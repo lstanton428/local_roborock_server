@@ -50,7 +50,7 @@ Then open the admin dashboard at your configured stack hostname, for example:
 
 - `https://api-roborock.example.com:555/admin`
 
-Do not use the Home Assistant UI hostname unless it is the same hostname covered by the TLS certificate you configured for `stack_fqdn`.
+Do not use the Home Assistant UI hostname unless it is the same hostname covered by the TLS certificate you configured for `stack_fqdn`. The add-on's **Open Web UI** button already opens the stack hostname.
 
 After the dashboard opens, complete the same post-start steps as the Docker install:
 

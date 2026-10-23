@@ -1930,7 +1930,9 @@ class ReleaseSupervisor:
             app=build_ingress_app(
                 admin_url=admin_url,
                 status=self.ingress_status,
-                set_new_connections_enabled=self.set_new_connections_enabled,
+                set_new_connections_enabled=(
+                    self.set_new_connections_enabled if network.ingress_new_connections_controls else None
+                ),
             ),
             bind_host=network.bind_host,
             port=network.ingress_port,

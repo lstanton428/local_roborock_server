@@ -142,7 +142,24 @@ def test_addon_opens_the_admin_dashboard_through_ingress(tmp_path: Path) -> None
     config_path = tmp_path / "config.toml"
     _write_options(options_path, options)
     write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
-    assert load_config(config_path).network.ingress_port == manifest["ingress_port"]
+    config = load_config(config_path)
+    assert config.network.ingress_port == manifest["ingress_port"]
+    assert manifest["options"]["ingress_new_connections_controls"] is True
+    assert manifest["schema"]["ingress_new_connections_controls"] == "bool?"
+    assert config.network.ingress_new_connections_controls is True
+
+    options.pop("ingress_new_connections_controls")
+    _write_options(options_path, options)
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.ingress_new_connections_controls is True
+
+    _write_options(options_path, {**options, "ingress_new_connections_controls": False})
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.ingress_new_connections_controls is False
+
+    _write_options(options_path, {**options, "ingress_new_connections_controls": "no"})
+    with pytest.raises(ValueError, match="ingress_new_connections_controls"):
+        write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
 
 
 def test_write_config_from_home_assistant_options_provided_tls_requires_paths_when_blank(tmp_path: Path) -> None:

@@ -55,10 +55,12 @@ _PAGE = """<!doctype html>
     <h2>New connections</h2>
     <p class="hint">Needed when a phone app, Home Assistant or a vacuum signs in or pairs for the first time.</p>
     <p id="nc-state" class="state">Loading…</p>
-    <div class="actions">
+    <div id="nc-actions" class="actions" hidden>
       <button id="nc-open" type="button" class="primary">Open</button>
       <button id="nc-close" type="button">Close now</button>
     </div>
+    <p id="nc-readonly" class="hint" hidden>Opening and closing from Home Assistant is turned off
+      (<code>ingress_new_connections_controls</code>). Use the admin dashboard.</p>
     <p id="nc-error" class="error" hidden></p>
   </section>
 
@@ -115,6 +117,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .list li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
 .list li:first-child { border-top: none; }
 .error { color: var(--bad); margin: 10px 0 0; }
+code { font-size: 12px; }
 """
 
 _JS = """
@@ -159,6 +162,8 @@ function renderNewConnections() {
     className += " good";
   }
   text("nc-state", state, className);
+  document.getElementById("nc-actions").hidden = !status.controls;
+  document.getElementById("nc-readonly").hidden = status.controls;
   const open = nc.turned_on && nc.enabled && remaining !== 0;
   document.getElementById("nc-open").textContent = open && remaining !== null ? "Restart window" : windowLabel(nc.window_minutes);
   document.getElementById("nc-open").disabled = open && remaining === null;
@@ -258,8 +263,10 @@ def build_ingress_app(
     *,
     admin_url: str,
     status: Callable[[], dict[str, Any]],
-    set_new_connections_enabled: Callable[[bool], object],
+    set_new_connections_enabled: Callable[[bool], object] | None,
 ) -> FastAPI:
+    """Build the panel; without set_new_connections_enabled it is read-only."""
+    controls = set_new_connections_enabled is not None
     page = _PAGE.replace("{admin_url}", html.escape(admin_url, quote=True))
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -286,10 +293,12 @@ def build_ingress_app(
 
     @app.get("/api/status")
     async def panel_status() -> Response:
-        return JSONResponse(status())
+        return JSONResponse({**status(), "controls": controls})
 
     @app.post("/api/new-connections")
     async def panel_new_connections(request: Request) -> Response:
+        if set_new_connections_enabled is None:
+            return JSONResponse({"error": "New-connections controls are turned off for this panel"}, status_code=403)
         # A JSON content type cannot be sent cross-site without a CORS preflight,
         # which this app never answers.
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
@@ -304,6 +313,6 @@ def build_ingress_app(
         set_new_connections_enabled(enabled)
         user = request.headers.get("x-remote-user-display-name") or request.headers.get("x-remote-user-name") or "unknown user"
         LOG.info("New connections %s from Home Assistant by %s", "opened" if enabled else "closed", user)
-        return JSONResponse(status())
+        return JSONResponse({**status(), "controls": controls})
 
     return app

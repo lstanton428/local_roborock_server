@@ -63,7 +63,7 @@ def test_panel_opens_and_closes_new_connections(caplog) -> None:
         closed = client.post("/api/new-connections", json={"enabled": False})
 
     assert opened.status_code == closed.status_code == 200
-    assert opened.json() == {"overall_ok": True, "new_connections": {"enabled": True}}
+    assert opened.json() == {"overall_ok": True, "new_connections": {"enabled": True}, "controls": True}
     assert changes == [True, False]
     assert "New connections opened from Home Assistant by Levi" in caplog.messages
 
@@ -78,6 +78,15 @@ def test_panel_rejects_new_connection_changes_that_are_not_json_booleans() -> No
     for body in ({"enabled": "true"}, {"enabled": 1}, {}, [True]):
         assert client.post("/api/new-connections", json=body).status_code == 400
     assert changes == []
+
+
+def test_panel_is_read_only_without_new_connection_controls() -> None:
+    app = build_ingress_app(admin_url=ADMIN_URL, status=lambda: {"overall_ok": True}, set_new_connections_enabled=None)
+    client = TestClient(app, client=(HA_INGRESS_PROXY, 50000))
+
+    assert client.get("/api/status").json() == {"overall_ok": True, "controls": False}
+    for enabled in (True, False):
+        assert client.post("/api/new-connections", json={"enabled": enabled}).status_code == 403
 
 
 def test_ingress_status_reports_new_connections_without_secrets(tmp_path) -> None:

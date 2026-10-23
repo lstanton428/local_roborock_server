@@ -12,7 +12,7 @@ Actalis provides the EAB KID and HMAC key from its ACME account setup. Create or
 
 The automated issuance shape differs by ACME CA:
 
-- `zerossl` requests `base_domain` plus `*.base_domain`
+- `zerossl` requests `stack_fqdn` and the same name without `api-` (plus any `tls.extra_names`). Set `tls.wildcard = true` to request `base_domain` plus `*.base_domain` instead; a wildcard certificate from an earlier release keeps that shape until you set `tls.wildcard = false`.
 - `actalis` requests only `stack_fqdn`
 
 ## Create the Cloudflare Token
@@ -29,6 +29,8 @@ Create a user API token in Cloudflare for the zone you will use in `tls.base_dom
 8. Copy the token secret immediately. Cloudflare only shows it once.
 
 For this project, keep the token limited to the single zone you are using. Do not use a global API key.
+
+Cloudflare cannot limit a token to one DNS record, so the token can edit every record in that zone. If that matters to you, use a zone that holds nothing else for the stack hostname.
 
 If you also create a public DNS record for the stack hostname because you want remote access, remember that you are making a self-hosted service publicly accessible. The server handles auth and can disable new devices from connecting, but there is still always risk. Keep it local-only if that works for you.
 

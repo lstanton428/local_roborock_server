@@ -16,9 +16,8 @@ def _write_options(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-@pytest.mark.parametrize("addon", ["roborock_local_server_addon", "roborock_local_server_beta_addon"])
-def test_logging_options_round_trip_from_addon_schema(tmp_path, addon):
-    manifest = yaml.safe_load((Path(addon) / "config.yaml").read_text())
+def test_logging_options_round_trip_from_addon_schema(tmp_path):
+    manifest = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())
     assert manifest["options"]["log_max_size_mb"] == 10
     assert manifest["options"]["log_backup_count"] == 3
     assert manifest["schema"]["log_max_size_mb"] == "int(1,1024)?"
@@ -36,9 +35,8 @@ def test_logging_options_round_trip_from_addon_schema(tmp_path, addon):
     assert config.logging.backup_count == 0
 
 
-@pytest.mark.parametrize("addon", ["roborock_local_server_addon", "roborock_local_server_beta_addon"])
-def test_addon_masks_secret_options(addon):
-    schema = yaml.safe_load((Path(addon) / "config.yaml").read_text())["schema"]
+def test_addon_masks_secret_options():
+    schema = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())["schema"]
     secrets = ["acme_eab_hmac_key", "cloudflare_token", "admin_password", "protocol_login_pin", "turn_password"]
     # Home Assistant shows str options in clear text; password options are masked.
     masked = {key: schema[key].rstrip("?") for key in secrets if key in schema}

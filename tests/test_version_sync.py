@@ -24,18 +24,9 @@ def test_init_module_exports_single_version_literal() -> None:
 
 
 def test_home_assistant_addon_version_matches_package_version() -> None:
-    # Prereleases update only the opt-in Beta add-on. Stable keeps its last release.
-    directory = (
-        "roborock_local_server_beta_addon"
-        if Version(__version__).is_prerelease
-        else "roborock_local_server_addon"
-    )
-    addon = yaml.safe_load(Path(directory, "config.yaml").read_text(encoding="utf-8"))
-    if directory == "roborock_local_server_addon":
-        assert FORK_SUFFIX.search(addon["version"])
-        assert FORK_SUFFIX.sub("", addon["version"]) == __version__
-    else:
-        assert addon["version"] == __version__
+    addon = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text(encoding="utf-8"))
+    assert FORK_SUFFIX.search(addon["version"])
+    assert FORK_SUFFIX.sub("", addon["version"]) == __version__
 
 
 def test_stable_addon_never_selects_a_prerelease_image() -> None:
@@ -60,14 +51,11 @@ def test_fork_release_workflow_publishes_the_addon_image() -> None:
     assert repository["url"] == "https://github.com/lstanton428/local_roborock_server"
 
 
-def test_beta_addon_requires_a_separate_opt_in_installation() -> None:
-    stable = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text(encoding="utf-8"))
-    beta = yaml.safe_load(Path("roborock_local_server_beta_addon/config.yaml").read_text(encoding="utf-8"))
-    assert beta["slug"] != stable["slug"]
-    assert beta["name"] != stable["name"]
-    assert beta["stage"] == "experimental"
-    assert beta["boot"] == "manual"
-    assert Version(beta["version"]).is_prerelease
+def test_addon_repository_lists_only_the_hardened_addon() -> None:
+    # Home Assistant lists every add-on folder in the repository. The fork ships
+    # one add-on; upstream's Beta add-on pulled upstream's old 1.1.0-rc2 image.
+    addons = sorted(path.parent.name for path in Path(".").glob("*/config.yaml"))
+    assert addons == ["roborock_local_server_addon"]
 
 
 def test_addon_turn_defaults_to_disabled_without_reserving_udp_ports() -> None:

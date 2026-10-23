@@ -2,7 +2,9 @@
 
 ## 1.2.1-hardened.4
 
-- In the Home Assistant iOS, macOS and Android apps, **Open Web UI** now opens the admin dashboard in your default browser instead of trying to load it inside the app. If the app needs a click first, select the link on the page.
+- **Open Web UI** now opens a Roborock panel inside Home Assistant: server health, connected vacuums, certificate expiry, and the new-connections window with **Open** / **Close now** buttons. Each change is logged with the Home Assistant user's name.
+- New option `ingress_new_connections_controls` (default on). Turn it off to make the panel read-only, so only the admin dashboard can open or close new connections.
+- The panel's **Open admin dashboard** link opens in your default browser from the Home Assistant iOS, macOS and Android apps, and in a new tab in a browser.
 
 ## 1.2.1-hardened.3
 

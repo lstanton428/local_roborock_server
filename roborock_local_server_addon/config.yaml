@@ -74,6 +74,7 @@ options:
   mqtt_tls_port: 8881
   advertised_https_port: 0
   advertised_mqtt_tls_port: 0
+  ingress_new_connections_controls: true
   region: "us"
   log_max_size_mb: 10
   log_backup_count: 3
@@ -108,6 +109,7 @@ schema:
   mqtt_tls_port: port
   advertised_https_port: int
   advertised_mqtt_tls_port: int
+  ingress_new_connections_controls: bool?
   region: list(us|eu|cn|ru)
   log_max_size_mb: int(1,1024)?
   log_backup_count: int(0,20)?

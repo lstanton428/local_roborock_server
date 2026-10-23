@@ -173,5 +173,18 @@ def test_supervisor_serves_the_ingress_page_only_when_configured(tmp_path, monke
     assert ingress["port"] == 8099 and ingress["tls_enabled"] is False
     page = TestClient(ingress["app"], client=(HA_INGRESS_PROXY, 50000)).get("/")
     assert 'href="https://api-roborock.example.com:555/admin"' in page.text
+    assert page.status_code == 200
+    panel = TestClient(ingress["app"], client=(HA_INGRESS_PROXY, 50000))
+    assert panel.get("/api/status").json()["controls"] is True
     asyncio.run(supervisor.stop())
     assert supervisor._ingress_server is None
+
+    started.clear()
+    config = replace(config, network=replace(config.network, ingress_new_connections_controls=False))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    asyncio.run(supervisor.start())
+    panel = TestClient(started[-1]["app"], client=(HA_INGRESS_PROXY, 50000))
+    assert panel.get("/api/status").json()["controls"] is False
+    assert panel.post("/api/new-connections", json={"enabled": False}).status_code == 403
+    assert supervisor.new_connections_enabled() is True
+    asyncio.run(supervisor.stop())

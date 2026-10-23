@@ -25,7 +25,9 @@ Before choosing the TLS mode, check the tested-vacuum certificate guidance in `d
 
 The add-on always runs the embedded MQTT broker and keeps the topic bridge enabled.
 
-Then open `https://api-roborock.example.com:555/admin` using your configured `stack_fqdn` and HTTPS port. **Open Web UI** (or the optional **Roborock** sidebar entry) takes you there: it goes through Home Assistant ingress to a page that opens the dashboard on `stack_fqdn` and `advertised_https_port`.
+Then open `https://api-roborock.example.com:555/admin` using your configured `stack_fqdn` and HTTPS port.
+
+**Open Web UI** (or the optional **Roborock** sidebar entry) opens a panel in Home Assistant with the server's health, connected vacuums, certificate expiry and the new-connections window, plus a link to the admin dashboard on `stack_fqdn` and `advertised_https_port`. From the Home Assistant apps the link opens in your default browser. Any Home Assistant admin can open or close new connections from the panel; each change is logged with their name. Set `ingress_new_connections_controls: false` to make the panel read-only, so only the admin dashboard (its own password, local networks only) can change it. While the window is open, apps and Home Assistant still need your email and PIN to sign in.
 
 After the dashboard opens:
 

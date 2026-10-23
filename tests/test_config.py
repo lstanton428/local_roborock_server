@@ -35,6 +35,9 @@ def test_ingress_port_is_off_unless_configured(tmp_path):
     text = path.read_text()
     path.write_text(text.replace("[network]\n", "[network]\ningress_port = 8099\n", 1))
     assert load_config(path).network.ingress_port == 8099
+    assert load_config(path).network.ingress_new_connections_controls is True
+    path.write_text(text.replace("[network]\n", "[network]\ningress_new_connections_controls = false\n", 1))
+    assert load_config(path).network.ingress_new_connections_controls is False
     for value in ("-1", "65536"):
         path.write_text(text.replace("[network]\n", f"[network]\ningress_port = {value}\n", 1))
         with pytest.raises(ValueError, match="network.ingress_port"):

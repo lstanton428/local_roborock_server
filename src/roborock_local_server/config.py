@@ -32,8 +32,10 @@ class NetworkConfig:
     mqtt_client_id: str
     trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     timezone: str = ""
-    # Plain-HTTP port for the Home Assistant ingress page; 0 disables it.
+    # Plain-HTTP port for the Home Assistant ingress panel; 0 disables it.
     ingress_port: int = 0
+    # Whether the ingress panel may open and close new connections.
+    ingress_new_connections_controls: bool = True
 
 
 @dataclass(frozen=True)
@@ -382,6 +384,7 @@ def load_config(path: str | Path) -> AppConfig:
                 "network.timezone",
             ),
             ingress_port=ingress_port,
+            ingress_new_connections_controls=_as_bool(network.get("ingress_new_connections_controls"), True),
         ),
         broker=BrokerConfig(
             mode=broker_mode,

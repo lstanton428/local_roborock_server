@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from python_multipart.exceptions import MultipartParseError
 import uvicorn
+from cryptography import x509
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .certs import CertificateManager
@@ -1434,6 +1435,44 @@ class ReleaseSupervisor:
             "advertised_mqtt_tls_port": self.config.network.advertised_mqtt_tls_port,
         }
 
+    def ingress_status(self) -> dict[str, Any]:
+        """What the Home Assistant ingress panel shows: no secrets, keys or sessions."""
+        self._refresh_turn_health()
+        health = self.runtime_state.health_snapshot()
+        auth = self._auth_payload()
+        return {
+            "overall_ok": bool(health["overall_ok"]),
+            "services_down": [
+                service["name"]
+                for service in health["services"]
+                if service["required"] and service["enabled"] and not service["running"]
+            ],
+            "vacuums": [
+                {
+                    "name": str(vac.get("name") or vac.get("duid") or "").strip(),
+                    "model": str(vac.get("model") or "").strip(),
+                    "connected": bool(vac.get("connected")),
+                }
+                for vac in self._vacuums_payload()["vacuums"]
+            ],
+            "new_connections": {
+                "enabled": bool(auth["new_connections_enabled"]),
+                "turned_on": bool(self.config.admin.new_connections_enabled),
+                "seconds_remaining": auth.get("new_connections_seconds_remaining"),
+                "window_minutes": auth.get("new_connections_window_minutes", 0),
+            },
+            "certificate": self._certificate_validity(),
+        }
+
+    def _certificate_validity(self) -> dict[str, str] | None:
+        if not self._uses_local_tls():
+            return None
+        try:
+            cert = x509.load_pem_x509_certificate(self.certificate_manager.certificate_paths.cert_file.read_bytes())
+        except (OSError, ValueError):
+            return None
+        return {"not_after": cert.not_valid_after_utc.isoformat()}
+
     def _vacuums_payload(self) -> dict[str, Any]:
         inventory = _load_inventory(self.paths.inventory_path)
         inventory_vacuums = _extract_inventory_vacuums(self.context, inventory)
@@ -1888,13 +1927,17 @@ class ReleaseSupervisor:
         network = self.config.network
         admin_url = admin_dashboard_url(network.stack_fqdn, network.advertised_https_port)
         self._ingress_server = ManagedFastApiServer(
-            app=build_ingress_app(admin_url=admin_url),
+            app=build_ingress_app(
+                admin_url=admin_url,
+                status=self.ingress_status,
+                set_new_connections_enabled=self.set_new_connections_enabled,
+            ),
             bind_host=network.bind_host,
             port=network.ingress_port,
             tls_enabled=False,
         )
         await self._ingress_server.start()
-        self.root_logger.info("Home Assistant ingress page on port %d opens %s", network.ingress_port, admin_url)
+        self.root_logger.info("Home Assistant ingress panel on port %d links to %s", network.ingress_port, admin_url)
 
     def _start_mqtt_proxy(self) -> None:
         cert_paths = self.certificate_manager.certificate_paths

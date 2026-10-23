@@ -1656,7 +1656,7 @@ def test_polling_an_active_onboarding_session_keeps_the_window_open(tmp_path: Pa
     assert supervisor.new_connections_enabled() is False
 
 
-def test_polling_onboarding_does_not_reopen_an_expired_window(tmp_path: Path, monkeypatch) -> None:
+def test_polling_onboarding_reopens_an_expired_window(tmp_path: Path, monkeypatch) -> None:
     from roborock_local_server import server as server_module
 
     now = {"value": 1000.0}
@@ -1664,8 +1664,25 @@ def test_polling_onboarding_does_not_reopen_an_expired_window(tmp_path: Path, mo
     config_file = write_release_config(tmp_path)
     config = load_config(config_file)
     supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app)
+    assert client.post("/admin/api/login", json={"password": "correct horse battery staple"}).status_code == 200
+    session_id = client.post("/admin/api/onboarding/sessions", json={"new_vacuum": True}).json()["session_id"]
+
+    # The admin sat at the onboarding tool's retry prompt past the window.
+    now["value"] += 31 * 60
+    assert client.get("/region?did=1103835404427&pid=roborock.vacuum.a117").status_code == 403
+    # Typing retry polls the same session, which reopens the window.
+    assert client.get(f"/admin/api/onboarding/sessions/{session_id}").status_code == 200
+    assert supervisor.new_connections_enabled() is True
+    assert client.get("/region?did=1103835404427&pid=roborock.vacuum.a117").status_code == 200
+
+
+def test_polling_onboarding_does_not_reopen_new_connections_turned_off(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
     session_id = supervisor.start_onboarding_session(new_vacuum=True)["session_id"]
 
-    now["value"] += 31 * 60
+    supervisor.set_new_connections_enabled(False)
     supervisor.onboarding_session_snapshot(session_id=session_id)
     assert supervisor.new_connections_enabled() is False

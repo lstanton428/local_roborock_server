@@ -1,5 +1,5 @@
 name: Roborock Local Server (hardened)
-version: "1.2.1-hardened.1"
+version: "1.2.1-hardened.2"
 slug: roborock_local_server
 description: Private Roborock HTTPS and MQTT stack for Home Assistant environments.
 url: "https://github.com/lstanton428/local_roborock_server"

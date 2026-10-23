@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1-hardened.2
+
+Fixes found while onboarding a Saros 10. Existing settings and paired vacuums keep working; no re-pairing is needed.
+
+- Typing `retry` or `refresh` in the onboarding tool now reopens the new-connections window if it closed while the tool waited at its prompt. Before, the vacuum was refused with `new_connections_disabled_onboarding`.
+- The Cloudflare API token is masked on the add-on configuration page. Your saved token is kept.
+- The startup log names the address the internal MQTT broker really listens on (`127.0.0.1`), instead of `0.0.0.0`.
+- The add-on repository no longer lists the unused Beta add-on, which pulled the old upstream `1.1.0-rc2` image.
+
 ## 1.2.1-hardened.1
 
 Security-hardened build of 1.2.1 from the lstanton428 fork (`hardened` branch). Existing settings, sessions and paired vacuums keep working; no re-pairing is needed.

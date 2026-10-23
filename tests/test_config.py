@@ -29,6 +29,18 @@ def test_logging_rejects_invalid_limits(tmp_path, field, value):
         load_config(path)
 
 
+def test_ingress_port_is_off_unless_configured(tmp_path):
+    path = write_release_config(tmp_path)
+    assert load_config(path).network.ingress_port == 0
+    text = path.read_text()
+    path.write_text(text.replace("[network]\n", "[network]\ningress_port = 8099\n", 1))
+    assert load_config(path).network.ingress_port == 8099
+    for value in ("-1", "65536"):
+        path.write_text(text.replace("[network]\n", f"[network]\ningress_port = {value}\n", 1))
+        with pytest.raises(ValueError, match="network.ingress_port"):
+            load_config(path)
+
+
 def test_turn_config_defaults_and_rejects_unsafe_provided_credentials(tmp_path):
     path = write_release_config(tmp_path)
     base = path.read_text()

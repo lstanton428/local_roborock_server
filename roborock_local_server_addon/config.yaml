@@ -62,7 +62,12 @@ map:
   - ssl:ro
   - addon_config:rw
   - all_addon_configs:ro
-webui: "https://[HOST]:[PORT:555]/admin"
+# webui can only use the hostname Home Assistant was opened with, never stack_fqdn,
+# so Open Web UI goes through ingress to a page that opens the admin dashboard.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:robot-vacuum
+panel_title: Roborock
 options:
   stack_fqdn: "api-roborock.example.com"
   https_port: 555

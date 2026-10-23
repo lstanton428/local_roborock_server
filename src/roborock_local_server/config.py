@@ -27,6 +27,8 @@ class NetworkConfig:
     mqtt_client_id: str
     trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     timezone: str = ""
+    # Plain-HTTP port for the Home Assistant ingress page; 0 disables it.
+    ingress_port: int = 0
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,9 @@ def load_config(path: str | Path) -> AppConfig:
 
     https_port = _as_port(network.get("https_port"), "network.https_port", 555)
     mqtt_tls_port = _as_port(network.get("mqtt_tls_port"), "network.mqtt_tls_port", 8881)
+    ingress_port = _as_int(network.get("ingress_port"), "network.ingress_port", 0)
+    if ingress_port and not (1 <= ingress_port <= 65535):
+        raise ValueError("network.ingress_port must be 0 or between 1 and 65535")
 
     config = AppConfig(
         network=NetworkConfig(
@@ -313,6 +318,7 @@ def load_config(path: str | Path) -> AppConfig:
                 network.get("timezone", "") or parsed.get("timezone", ""),
                 "network.timezone",
             ),
+            ingress_port=ingress_port,
         ),
         broker=BrokerConfig(
             mode=broker_mode,

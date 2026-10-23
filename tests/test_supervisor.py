@@ -132,3 +132,46 @@ def test_disabled_turn_does_not_publish_empty_health_entry(tmp_path):
     config = load_config(config_file)
     supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
     assert not any(s["name"] == "turn_relay" for s in supervisor._status_payload()["health"]["services"])
+
+
+def test_supervisor_serves_the_ingress_page_only_when_configured(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from roborock_local_server.ingress import HA_INGRESS_PROXY
+
+    started: list[dict] = []
+
+    class RecordingServer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.running = False
+
+        async def start(self):
+            self.running = True
+            started.append(self.kwargs)
+
+        async def stop(self):
+            self.running = False
+
+    config_file = write_release_config(tmp_path, broker_mode="external", enable_topic_bridge=False)
+    config = load_config(config_file)
+    monkeypatch.setattr(server_module, "_connectivity_check", lambda host, port: None)
+    monkeypatch.setattr(server_module, "ManagedFastApiServer", RecordingServer)
+    monkeypatch.setattr(ReleaseSupervisor, "_start_mqtt_proxy", lambda self: None)
+    monkeypatch.setattr(ReleaseSupervisor, "_uses_local_tls", lambda self: False)
+
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    asyncio.run(supervisor.start())
+    assert [kwargs["port"] for kwargs in started] == [config.network.https_port]
+    asyncio.run(supervisor.stop())
+
+    started.clear()
+    config = replace(config, network=replace(config.network, ingress_port=8099, advertised_https_port=555))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    asyncio.run(supervisor.start())
+    [_, ingress] = started
+    assert ingress["port"] == 8099 and ingress["tls_enabled"] is False
+    page = TestClient(ingress["app"], client=(HA_INGRESS_PROXY, 50000)).get("/")
+    assert 'href="https://api-roborock.example.com:555/admin"' in page.text
+    asyncio.run(supervisor.stop())
+    assert supervisor._ingress_server is None

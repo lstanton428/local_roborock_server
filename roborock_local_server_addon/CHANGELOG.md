@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1-hardened.4
+
+- In the Home Assistant iOS, macOS and Android apps, **Open Web UI** now opens the admin dashboard in your default browser instead of trying to load it inside the app. If the app needs a click first, select the link on the page.
+
 ## 1.2.1-hardened.3
 
 - **Open Web UI** now opens the admin dashboard on `stack_fqdn` (with `advertised_https_port`) instead of the hostname you opened Home Assistant with. It goes through Home Assistant ingress, so you can also show **Roborock** in the sidebar. The ingress page only answers Home Assistant's ingress proxy and holds nothing but the dashboard link.

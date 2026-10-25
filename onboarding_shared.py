@@ -106,7 +106,7 @@ def perform_onboarding_preflight(
 
 
 def perform_camera_preflight(*, api: Any, stack_server: str, country_domain: str,
-                             model: str, output: TextIO) -> None:
+                             model: str, output: TextIO, camera_input: str = "auto") -> None:
     # Defer firmware-specific checks until a device is selected. Ordinary pairing
     # may coexist with TURN configured for another robot.
     if "/" not in country_domain:
@@ -119,7 +119,8 @@ def perform_camera_preflight(*, api: Any, stack_server: str, country_domain: str
     if turn.get("mode") == "disabled":
         raise RuntimeError("Camera preflight failed: TURN is disabled. Configure provided or external mode first.")
     # Firmware varies: Saros uses country_domain, Qrevo a87 uses token.r.
-    endpoints = camera_bootstrap_endpoints(stack_server=stack_server, country_domain=country_domain, model=model)
+    endpoints = camera_bootstrap_endpoints(stack_server=stack_server, country_domain=country_domain,
+                                           model=model, camera_input=camera_input)
     for host, port in endpoints:
         label = f"https://{host}:{port}/iot.roborock.com/fwapi/createca"
         output.write(f"Checking camera bootstrap DNS and trusted TLS at {label}...\n")
@@ -142,11 +143,26 @@ def perform_camera_preflight(*, api: Any, stack_server: str, country_domain: str
         output.write("Provided TURN is running. Also enable its UDP listener and relay port mappings; TLS checks do not verify UDP media connectivity.\n")
 
 
-def camera_bootstrap_endpoints(*, stack_server: str, country_domain: str, model: str = "") -> list[tuple[str, int]]:
-    """Check the observed firmware input; unknown models conservatively need both."""
+CAMERA_INPUTS = ("auto", "token.r", "country_domain")
+
+
+def camera_bootstrap_endpoints(*, stack_server: str, country_domain: str, model: str = "",
+                               camera_input: str = "auto") -> list[tuple[str, int]]:
+    """Check the observed firmware input; unknown models conservatively need both.
+
+    ``camera_input`` overrides the model lookup for firmware that has not been
+    observed yet, so an untested model can be paired with only one input fitting
+    the 15-character limit.
+    """
+    if camera_input not in CAMERA_INPUTS:
+        raise ValueError(f"camera_input must be one of {', '.join(CAMERA_INPUTS)}")
     endpoints: list[tuple[str, int]] = []
     inputs = [("token.r", stack_server), ("country_domain", country_domain)]
-    if model == "roborock.vacuum.a87":
+    if camera_input == "token.r":
+        inputs = inputs[:1]
+    elif camera_input == "country_domain":
+        inputs = inputs[1:]
+    elif model == "roborock.vacuum.a87":
         inputs = inputs[:1]
     elif model == "roborock.vacuum.a144":
         inputs = inputs[1:]

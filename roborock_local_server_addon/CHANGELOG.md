@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1-hardened.5
+
+- Zone routines saved in the Roborock app run again. The server now sends the routine to the vacuum the way the cloud did, so the vacuum cleans the zones it stores itself. Earlier versions failed with "missing range coordinates" for any zone not saved through this server. The routine's own suction and mop settings apply.
+- Onboarding: new `--camera-input token.r|country_domain` option for camera firmware that hasn't been tested yet, so only the value that firmware uses has to fit the 15-character camera limit.
+
 ## 1.2.1-hardened.4
 
 - **Open Web UI** now opens a Roborock panel inside Home Assistant: server health, connected vacuums, certificate expiry, and the new-connections window with **Open** / **Close now** buttons. Each change is logged with the Home Assistant user's name.

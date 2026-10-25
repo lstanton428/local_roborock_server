@@ -30,7 +30,7 @@ from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
 
-from onboarding_shared import build_ssl_context, gateway_mac, normalize_camera_domain, perform_camera_preflight, perform_onboarding_preflight, ssid_pre_key
+from onboarding_shared import CAMERA_INPUTS, build_ssl_context, gateway_mac, normalize_camera_domain, perform_camera_preflight, perform_onboarding_preflight, ssid_pre_key
 
 
 CFGWIFI_HOST = "192.168.8.1"
@@ -299,6 +299,7 @@ class GuidedOnboardingConfig:
     cst: str
     country_domain: str
     allow_insecure_tls: bool = False
+    camera_input: str = "auto"
 
 
 class ApiReachabilityError(RuntimeError):
@@ -443,6 +444,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional domain for local camera TURN bootstrap (must be 14 characters or fewer; trailing slash appended automatically).",
     )
     parser.add_argument(
+        "--camera-input",
+        choices=CAMERA_INPUTS,
+        default="auto",
+        help="Which onboarding value the vacuum's camera bootstrap uses. 'auto' checks the input observed "
+             "for known models and both for others; set token.r or country_domain for an untested model.",
+    )
+    parser.add_argument(
         "--allow-insecure-tls",
         action="store_true",
         help="Skip TLS certificate verification for the admin API and MQTT preflight checks.",
@@ -494,6 +502,7 @@ def prompt_for_config(args: argparse.Namespace, output: TextIO = sys.stdout) -> 
         cst=cst,
         country_domain=country_domain,
         allow_insecure_tls=bool(args.allow_insecure_tls),
+        camera_input=str(getattr(args, "camera_input", "auto") or "auto"),
     )
 
 
@@ -702,7 +711,8 @@ def run_guided_onboarding(
         try:
             perform_camera_preflight(api=api, stack_server=config.stack_server,
                                      country_domain=config.country_domain,
-                                     model=str(selected.get("model") or ""), output=output)
+                                     model=str(selected.get("model") or ""), output=output,
+                                     camera_input=config.camera_input)
         except (RuntimeError, ValueError) as exc:
             output.write(f"Camera preflight failed: {exc}\nChoose another vacuum or quit to edit the settings.\n")
             continue

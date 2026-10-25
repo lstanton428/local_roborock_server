@@ -223,3 +223,34 @@ def test_preflight_reports_when_tls_verification_is_skipped(monkeypatch: pytest.
     )
 
     assert "certificate verification skipped" in output.getvalue()
+
+
+@pytest.mark.parametrize(("camera_input", "endpoint"), [
+    ("country_domain", ("example.io", 555)),
+    ("token.r", ("vac.cc", 556)),
+])
+def test_camera_input_override_checks_only_the_named_input_for_untested_model(monkeypatch, camera_input, endpoint):
+    calls = []
+    monkeypatch.setattr(onboarding_shared, "_probe_tls_endpoint", lambda **kw: calls.append(kw))
+    token = "roborock.example.tools:555/" if camera_input == "country_domain" else "vac.cc:556/"
+    country = "example.io:555/"
+    onboarding_shared.perform_camera_preflight(
+        api=_FakeApi(_camera_status()), stack_server=token, country_domain=country,
+        model="roborock.vacuum.a147", output=StringIO(), camera_input=camera_input,
+    )
+    assert [(c["host"], c["port"]) for c in calls] == [endpoint]
+
+
+def test_untested_model_with_long_token_fails_without_camera_input_override() -> None:
+    with pytest.raises(ValueError, match="Camera token.r.*15 characters"):
+        onboarding_shared.camera_bootstrap_endpoints(
+            stack_server="roborock.example.tools:555/", country_domain="example.io:555/",
+            model="roborock.vacuum.a147",
+        )
+
+
+def test_unknown_camera_input_is_rejected() -> None:
+    with pytest.raises(ValueError, match="camera_input must be one of"):
+        onboarding_shared.camera_bootstrap_endpoints(
+            stack_server="vac.cc:556/", country_domain="example.io:555/", camera_input="both",
+        )

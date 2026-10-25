@@ -9,7 +9,13 @@ from roborock.data import StatusV2
 from roborock.exceptions import RoborockException
 from roborock_local_server.bundled_backend.shared.context import ServerContext
 import roborock_local_server.bundled_backend.shared.routine_runner as routine_runner_module
-from roborock_local_server.bundled_backend.shared.routine_runner import RoutineRunner, parse_scene_steps
+from roborock_local_server.bundled_backend.shared.routine_runner import (
+    RoutineExecutionError,
+    RoutineRunner,
+    commands_for_step,
+    parse_scene_steps,
+    stored_scene_zones,
+)
 from roborock.roborock_typing import RoborockCommand
 
 
@@ -254,8 +260,9 @@ def test_run_scene_syncs_scene_tids_before_step_commands(tmp_path: Path, monkeyp
             RoborockCommand.REUNION_SCENES,
             {"data": [{"tid": "1756774254605"}, {"tid": "1773791700088"}]},
         )
-        assert sent_commands[1] == (RoborockCommand.SET_CUSTOM_MODE, [108])
-        assert sent_commands[2] == (
+        assert sent_commands[1] == (RoborockCommand.GET_SCENES_VALID_TIDS, None)
+        assert sent_commands[2] == (RoborockCommand.SET_CUSTOM_MODE, [108])
+        assert sent_commands[3] == (
             RoborockCommand.APP_ZONED_CLEAN,
             [[32800, 22750, 34550, 25350, 1]],
         )
@@ -437,6 +444,153 @@ def test_run_scene_retries_step_start_when_device_is_action_locked(tmp_path: Pat
         assert settle_calls == [15.0, 5.0]
 
     asyncio.run(exercise())
+
+
+# ---------------------------------------------------------------------------
+# Native zone scenes
+# ---------------------------------------------------------------------------
+
+_LITTER_TID = "1744231163916"
+# get_scenes_valid_tids as a Saros 10 (firmware 02.44.28) answers it.
+_VALID_TIDS_RESPONSE = [
+    {"tid": "1750004049362", "map_flag": 0, "zones": [{"zid": 6}]},
+    {"tid": _LITTER_TID, "map_flag": 0, "zones": [{"zid": 3}]},
+    {"tid": "1788097009293", "map_flag": 0, "segs": [{"sid": 2}, {"sid": 3}]},
+]
+
+
+def _litter_scene(*, range_coords: list[int] | None = None) -> dict[str, object]:
+    return _scene_with_zone_tid(
+        scene_id=4491080,
+        device_id="6HL2zfniaoYYV01CkVuhkO",
+        name="LR Litter",
+        tid=_LITTER_TID,
+        zid=3,
+        range_coords=range_coords,
+    )
+
+
+def test_stored_scene_zones_maps_tids_to_zone_ids() -> None:
+    assert stored_scene_zones(_VALID_TIDS_RESPONSE) == {
+        "1750004049362": {6},
+        _LITTER_TID: {3},
+    }
+    assert stored_scene_zones(["ok"]) == {}
+    assert stored_scene_zones({"result": []}) == {}
+
+
+def test_zone_step_stored_on_robot_replays_scene_command_with_source() -> None:
+    (step,) = parse_scene_steps(_litter_scene())
+
+    (command,) = commands_for_step(step, stored_zones=stored_scene_zones(_VALID_TIDS_RESPONSE))
+
+    assert command.command == "do_scenes_zones"
+    assert command.expects_reply is False
+    assert command.params == {
+        "data": [{"tid": _LITTER_TID, "zones": [{"zid": 3, "repeat": 1}], "fan_power": 108, "repeat": 1}],
+        "source": 101,
+    }
+
+
+def test_zone_step_prefers_robot_zone_over_stored_coordinates() -> None:
+    (step,) = parse_scene_steps(_litter_scene(range_coords=[1, 2, 3, 4]))
+
+    commands = commands_for_step(step, stored_zones={_LITTER_TID: {3}})
+
+    assert [command.command for command in commands] == ["do_scenes_zones"]
+
+
+def test_zone_step_not_stored_on_robot_falls_back_to_coordinates() -> None:
+    (step,) = parse_scene_steps(_litter_scene(range_coords=[32800, 22750, 34550, 25350]))
+
+    commands = commands_for_step(step, stored_zones={_LITTER_TID: {4}})
+
+    assert [(command.command, command.params) for command in commands] == [
+        (RoborockCommand.SET_CUSTOM_MODE, [108]),
+        (RoborockCommand.APP_ZONED_CLEAN, [[32800, 22750, 34550, 25350, 1]]),
+    ]
+
+
+def test_zone_step_without_robot_zone_or_coordinates_explains_the_fix() -> None:
+    (step,) = parse_scene_steps(_litter_scene())
+
+    with pytest.raises(RoutineExecutionError, match="zid=3 is not stored on the robot"):
+        commands_for_step(step, stored_zones={})
+
+
+class _NativeZoneClient:
+    """Fake routine client: answers get_scenes_valid_tids and stays silent on do_scenes_zones."""
+
+    def __init__(self, *, valid_tids=None, zones_error: Exception | None = None) -> None:
+        self.sent: list[tuple[object, object, float | None]] = []
+        self.waited = False
+        self._valid_tids = _VALID_TIDS_RESPONSE if valid_tids is None else valid_tids
+        self._zones_error = zones_error
+
+    def __call__(self, context, device, logger):
+        _ = context, device, logger
+        return self
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def send_command(self, command, params=None, *, timeout=None):
+        self.sent.append((command, params, timeout))
+        if command == RoborockCommand.GET_SCENES_VALID_TIDS:
+            if isinstance(self._valid_tids, Exception):
+                raise self._valid_tids
+            return self._valid_tids
+        if command == "do_scenes_zones":
+            if self._zones_error is not None:
+                raise self._zones_error
+            raise routine_runner_module._CommandTimeout("no reply")
+        return ["ok"]
+
+    async def wait_for_step_complete(self) -> None:
+        self.waited = True
+
+
+def test_run_scene_sends_native_zone_command_and_waits_on_status(tmp_path: Path, monkeypatch) -> None:
+    client = _NativeZoneClient()
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", client)
+    scene = _litter_scene()
+
+    asyncio.run(RoutineRunner(_test_context(tmp_path))._run_scene(scene=scene, steps=parse_scene_steps(scene)))
+
+    assert [command for command, _, _ in client.sent] == [
+        RoborockCommand.REUNION_SCENES,
+        RoborockCommand.GET_SCENES_VALID_TIDS,
+        "do_scenes_zones",
+    ]
+    assert client.sent[-1][1]["source"] == 101
+    assert client.sent[-1][2] == routine_runner_module._NATIVE_COMMAND_REPLY_SECONDS
+    assert client.waited is True
+
+
+def test_run_scene_native_zone_rejection_fails_the_routine(tmp_path: Path, monkeypatch) -> None:
+    client = _NativeZoneClient(
+        zones_error=RoborockException({"code": -10005, "message": "source field is missing"})
+    )
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", client)
+    scene = _litter_scene()
+
+    with pytest.raises(RoborockException):
+        asyncio.run(RoutineRunner(_test_context(tmp_path))._run_scene(scene=scene, steps=parse_scene_steps(scene)))
+
+    assert client.waited is False
+
+
+def test_run_scene_uses_coordinates_when_stored_zones_cannot_be_read(tmp_path: Path, monkeypatch) -> None:
+    client = _NativeZoneClient(valid_tids=RoborockException({"code": -10001, "message": "unknown method"}))
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", client)
+    scene = _litter_scene(range_coords=[32800, 22750, 34550, 25350])
+
+    asyncio.run(RoutineRunner(_test_context(tmp_path))._run_scene(scene=scene, steps=parse_scene_steps(scene)))
+
+    assert client.sent[-1][:2] == (RoborockCommand.APP_ZONED_CLEAN, [[32800, 22750, 34550, 25350, 1]])
 
 
 # ---------------------------------------------------------------------------

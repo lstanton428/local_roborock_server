@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import logging
@@ -41,6 +42,7 @@ __all__ = [
     "commands_for_step",
     "parse_scene_steps",
     "scene_device_id",
+    "stored_scene_zones",
 ]
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +59,13 @@ _POST_STEP_SETTLE_SECONDS = 15.0
 _POST_STEP_SETTLE_TIMEOUT_SECONDS = 10 * 60
 _ACTION_LOCK_RETRY_DELAY_SECONDS = 5.0
 _ACTION_LOCK_RETRY_ATTEMPTS = 6
+# The robot rejects scene commands without the cloud's source marker
+# (-10005 "source field is missing").
+_NATIVE_SCENE_SOURCE = 101
+# The robot answers a malformed scene command with an error but sends no reply
+# when it accepts one, so a missing reply means accepted and the step's status
+# wait confirms the clean started.
+_NATIVE_COMMAND_REPLY_SECONDS = 5.0
 from .inventory_io import WEB_API_INVENTORY_FILE
 _SUPPORTED_METHODS = {
     "do_scenes_app_start",
@@ -67,6 +76,7 @@ _STEP_START_COMMANDS = {
     RoborockCommand.APP_START,
     RoborockCommand.APP_SEGMENT_CLEAN,
     RoborockCommand.APP_ZONED_CLEAN,
+    "do_scenes_zones",
 }
 _ACTION_LOCK_ERROR_CODES = {-10003, -10007}
 _RESUME_COMMAND_BY_IN_CLEANING: dict[int, RoborockCommand] = {
@@ -80,10 +90,15 @@ class RoutineExecutionError(RuntimeError):
     """Raised when a saved scene cannot be executed as a local routine."""
 
 
+class _CommandTimeout(RoutineExecutionError):
+    """Raised when the robot sends no reply to a command."""
+
+
 @dataclass(frozen=True)
 class RoutineCommand:
-    command: RoborockCommand
+    command: RoborockCommand | str
     params: dict[str, Any] | list[Any] | None = None
+    expects_reply: bool = True
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,10 @@ class _ActiveRoutine:
     scene_id: int
     scene_name: str
     cancel_requested: bool = False
+
+
+def _command_name(command: RoborockCommand | str) -> str:
+    return command.value if isinstance(command, RoborockCommand) else command
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -272,7 +291,9 @@ def _zone_coord_params(entry: dict[str, Any]) -> list[list[int]]:
         range_value = raw_zone.get("range")
         if not isinstance(range_value, list) or len(range_value) < 4:
             raise RoutineExecutionError(
-                f"Scene zone zid={raw_zone.get('zid')} is missing range coordinates"
+                f"Scene zone tid={entry.get('tid')} zid={raw_zone.get('zid')} is not stored "
+                "on the robot and has no range coordinates; edit and save the zone in the "
+                "Roborock app to restore it"
             )
         repeat = max(1, _as_int(raw_zone.get("repeat"), 1))
         coords.append([
@@ -341,7 +362,59 @@ def _settings_commands(entry: dict[str, Any]) -> list[RoutineCommand]:
     return commands
 
 
-def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
+def stored_scene_zones(response: Any) -> dict[str, set[int]]:
+    """Map scene tid to the zone ids the robot stores, from get_scenes_valid_tids.
+
+    The response lists the zone and segment selections saved on the robot,
+    e.g. ``[{"tid": "1744231163916", "map_flag": 0, "zones": [{"zid": 3}]}]``.
+    Anything unexpected yields no zones, which selects the coordinate path.
+    """
+    stored: dict[str, set[int]] = {}
+    if not isinstance(response, list):
+        return stored
+    for entry in response:
+        if not isinstance(entry, dict):
+            continue
+        tid = str(entry.get("tid") or "").strip()
+        zones = entry.get("zones")
+        if not tid or not isinstance(zones, list):
+            continue
+        zone_ids = {
+            _as_int(zone.get("zid"), -1) for zone in zones if isinstance(zone, dict)
+        }
+        zone_ids.discard(-1)
+        if zone_ids:
+            stored.setdefault(tid, set()).update(zone_ids)
+    return stored
+
+
+def _native_zone_command(
+    step: RoutineStep,
+    entry: dict[str, Any],
+    stored_zones: Mapping[str, set[int]],
+) -> RoutineCommand | None:
+    """Replay the scene's own do_scenes_zones when the robot still stores its zones.
+
+    This is what the cloud sends: the robot cleans the ranges it saved with the
+    scene, so no coordinates are needed locally.
+    """
+    tid = str(entry.get("tid") or "").strip()
+    zones = entry.get("zones")
+    if not tid or not isinstance(zones, list) or not zones:
+        return None
+    zone_ids = {_as_int(zone.get("zid"), -1) if isinstance(zone, dict) else -1 for zone in zones}
+    if -1 in zone_ids or not zone_ids <= stored_zones.get(tid, set()):
+        return None
+    params = dict(step.params) if isinstance(step.params, dict) else {}
+    params.setdefault("source", _NATIVE_SCENE_SOURCE)
+    return RoutineCommand(step.method, params, expects_reply=False)
+
+
+def commands_for_step(
+    step: RoutineStep,
+    *,
+    stored_zones: Mapping[str, set[int]] | None = None,
+) -> list[RoutineCommand]:
     if step.method == "do_scenes_segments":
         entry = _single_data_entry(step)
         repeat = max(1, _as_int(entry.get("repeat"), 1))
@@ -354,6 +427,10 @@ def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
         ]
     if step.method == "do_scenes_zones":
         entry = _single_data_entry(step)
+        native = _native_zone_command(step, entry, stored_zones or {})
+        if native is not None:
+            # The scene params carry the fan and mop settings.
+            return [native]
         zone_coords = _zone_coord_params(entry)
         return [
             *_settings_commands(entry),
@@ -534,8 +611,10 @@ class _RoutineMqttClient:
 
     async def send_command(
         self,
-        command: RoborockCommand,
+        command: RoborockCommand | str,
         params: dict[str, Any] | list[Any] | None = None,
+        *,
+        timeout: float = _COMMAND_TIMEOUT_SECONDS,
     ) -> Any:
         if self._session is None:
             raise RoutineExecutionError("Routine MQTT client is not connected")
@@ -551,10 +630,10 @@ class _RoutineMqttClient:
 
         try:
             await self._session.publish(self._publish_topic, encoded)
-            return await asyncio.wait_for(future, timeout=_COMMAND_TIMEOUT_SECONDS)
+            return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as exc:
-            raise RoutineExecutionError(
-                f"Command {command.value} timed out after {_COMMAND_TIMEOUT_SECONDS}s"
+            raise _CommandTimeout(
+                f"Command {_command_name(command)} timed out after {timeout}s"
             ) from exc
         finally:
             self._pending.pop(request.request_id, None)
@@ -901,6 +980,24 @@ class RoutineRunner:
             {"data": [{"tid": tid} for tid in tids]},
         )
 
+    async def _stored_scene_zones(
+        self,
+        *,
+        client: _RoutineMqttClient,
+        steps: list[RoutineStep],
+        logger: logging.LoggerAdapter,
+    ) -> dict[str, set[int]]:
+        if not any(step.method == "do_scenes_zones" for step in steps):
+            return {}
+        try:
+            response = await client.send_command(RoborockCommand.GET_SCENES_VALID_TIDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read the robot's stored scene zones, using coordinates: %s", exc)
+            return {}
+        stored = stored_scene_zones(response)
+        logger.info("Robot stores zones for scene tids=%s", sorted(stored))
+        return stored
+
     async def _stop_scene(self, *, device_id: str, scene_id: int, scene_name: str) -> None:
         device = self._device_record(device_id)
         logger = logging.LoggerAdapter(
@@ -931,7 +1028,21 @@ class RoutineRunner:
         while True:
             attempts += 1
             try:
-                await client.send_command(routine_command.command, routine_command.params)
+                if routine_command.expects_reply:
+                    await client.send_command(routine_command.command, routine_command.params)
+                    return
+                try:
+                    await client.send_command(
+                        routine_command.command,
+                        routine_command.params,
+                        timeout=_NATIVE_COMMAND_REPLY_SECONDS,
+                    )
+                except _CommandTimeout:
+                    logger.info(
+                        "Routine step=%s command=%s sent; robot does not reply on success",
+                        step.step_id,
+                        _command_name(routine_command.command),
+                    )
                 return
             except RoborockUnsupportedFeature as exc:
                 if not _is_optional_unsupported_command(routine_command.command, exc):
@@ -940,7 +1051,7 @@ class RoutineRunner:
                     "Skipping unsupported routine command step=%s method=%s command=%s: %s",
                     step.step_id,
                     step.method,
-                    routine_command.command.value,
+                    _command_name(routine_command.command),
                     exc,
                 )
                 return
@@ -955,7 +1066,7 @@ class RoutineRunner:
                         "waiting %.0fs and retrying (%s/%s)",
                         step.step_id,
                         step.method,
-                        routine_command.command.value,
+                        _command_name(routine_command.command),
                         _ACTION_LOCK_RETRY_DELAY_SECONDS,
                         attempts,
                         _ACTION_LOCK_RETRY_ATTEMPTS,
@@ -989,15 +1100,16 @@ class RoutineRunner:
         await client.connect()
         try:
             await self._sync_scene_tids(client=client, scene=scene, device_id=device_id, logger=logger)
+            stored_zones = await self._stored_scene_zones(client=client, steps=steps, logger=logger)
             for step_index, step in enumerate(steps):
-                commands = commands_for_step(step)
+                commands = commands_for_step(step, stored_zones=stored_zones)
                 waits_for_step_complete = RoborockDataProtocol.TASK_COMPLETE.value in step.finish_dp_ids
                 for routine_command in commands:
                     logger.info(
                         "Routine step=%s method=%s command=%s params=%s",
                         step.step_id,
                         step.method,
-                        routine_command.command.value,
+                        _command_name(routine_command.command),
                         routine_command.params,
                     )
                     await self._send_step_command(

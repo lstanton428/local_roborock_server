@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1-hardened.6
+
+- The Roborock panel in Home Assistant now lists the vacuum's routines with **Run**, **Edit**, **Rename** and **Delete**, and a **New routine** button. Draw zones on the vacuum's live map or pick rooms in cleaning order, and give each step its own suction, water, mop route and repeat. Routines are saved in the Roborock app's format, so the server, the Home Assistant Roborock integration and LocalRock run them. Zones drawn in the panel run from their coordinates and nothing is written to the vacuum. Each change is logged with the Home Assistant user's name.
+- New option `ingress_routine_editor` (default on). Turn it off to only list and run routines in the panel.
+- Running a zone routine no longer warns about missing range coordinates when the routine already has them.
+
 ## 1.2.1-hardened.5
 
 - Zone routines saved in the Roborock app run again. The server now sends the routine to the vacuum the way the cloud did, so the vacuum cleans the zones it stores itself. Earlier versions failed with "missing range coordinates" for any zone not saved through this server. The routine's own suction and mop settings apply.

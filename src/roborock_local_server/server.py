@@ -38,6 +38,7 @@ from .bundled_backend.shared.runtime_state import ONBOARDING_STEP_LABELS, REQUIR
 from .cloud import CloudImportManager
 from .config import AppConfig, AppPaths, load_config, resolve_paths
 from .ingress import admin_dashboard_url, build_ingress_app
+from .routine_panel import RoutinePanel
 from .log_retention import configure_jsonl_logging, log_paths
 from .turn_relay import EmbeddedTurnRelay
 from .standalone_admin import register_standalone_admin_routes
@@ -2335,6 +2336,8 @@ class ReleaseSupervisor:
                 set_new_connections_enabled=(
                     self.set_new_connections_enabled if network.ingress_new_connections_controls else None
                 ),
+                routines=RoutinePanel(self.context),
+                routine_editor=network.ingress_routine_editor,
             ),
             bind_host=network.bind_host,
             port=network.ingress_port,

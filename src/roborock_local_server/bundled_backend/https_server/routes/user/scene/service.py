@@ -235,6 +235,29 @@ def _scene_zone_tids(param_payload: dict[str, Any]) -> set[str]:
     return tids
 
 
+def _scene_zones_missing_ranges(param_payload: dict[str, Any]) -> bool:
+    """Whether any zone in the scene lacks range coordinates."""
+    action = param_payload.get("action")
+    items = action.get("items") if isinstance(action, dict) else []
+    for item in items if isinstance(items, list) else []:
+        raw_param = item.get("param") if isinstance(item, dict) else None
+        if isinstance(raw_param, str):
+            try:
+                raw_param = json.loads(raw_param)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(raw_param, dict) or str(raw_param.get("method") or "").strip() != "do_scenes_zones":
+            continue
+        params = raw_param.get("params")
+        data = params.get("data") if isinstance(params, dict) else []
+        for entry in data if isinstance(data, list) else []:
+            zones = entry.get("zones") if isinstance(entry, dict) else None
+            for zone in zones if isinstance(zones, list) else []:
+                if isinstance(zone, dict) and _scene_zone_range(zone) is None:
+                    return True
+    return False
+
+
 def _scene_zone_ranges_from_store(
     ctx: ServerContext,
     *,
@@ -462,7 +485,8 @@ def _hydrate_inventory_scene_ranges(ctx: ServerContext, scene: dict[str, Any]) -
     tids = _scene_zone_tids(param_payload)
     hydrated_payload, changed = _hydrate_scene_param_with_zone_ranges(ctx, param_payload)
     if not changed:
-        if tids:
+        # Zones saved by the Home Assistant panel carry their ranges already.
+        if tids and _scene_zones_missing_ranges(param_payload):
             _LOGGER.warning(
                 "Scene %s has zone tids %s but no range data was hydrated from MQTT log",
                 scene_id,

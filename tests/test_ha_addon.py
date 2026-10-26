@@ -214,6 +214,30 @@ def test_addon_opens_the_admin_dashboard_through_ingress(tmp_path: Path) -> None
         write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
 
 
+def test_addon_routine_editor_option_defaults_on(tmp_path: Path) -> None:
+    manifest = yaml.safe_load(Path("roborock_local_server_addon/config.yaml").read_text())
+    assert manifest["options"]["ingress_routine_editor"] is True
+    assert manifest["schema"]["ingress_routine_editor"] == "bool?"
+    options = {**manifest["options"], "stack_fqdn": "api-roborock.example.com",
+               "cert_file": "cert", "key_file": "key", "admin_password": "secret",
+               "protocol_login_email": "user@example.com", "protocol_login_pin": "123456"}
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+
+    options.pop("ingress_routine_editor")
+    _write_options(options_path, options)
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.ingress_routine_editor is True
+
+    _write_options(options_path, {**options, "ingress_routine_editor": False})
+    write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+    assert load_config(config_path).network.ingress_routine_editor is False
+
+    _write_options(options_path, {**options, "ingress_routine_editor": "no"})
+    with pytest.raises(ValueError, match="ingress_routine_editor"):
+        write_config_from_home_assistant_options(options_path=options_path, config_path=config_path)
+
+
 def test_write_config_from_home_assistant_options_provided_tls_requires_paths_when_blank(tmp_path: Path) -> None:
     options_path = tmp_path / "options.json"
     config_path = tmp_path / "config.toml"

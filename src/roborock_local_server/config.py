@@ -36,6 +36,8 @@ class NetworkConfig:
     ingress_port: int = 0
     # Whether the ingress panel may open and close new connections.
     ingress_new_connections_controls: bool = True
+    # Whether the ingress panel may create, edit, rename and delete routines.
+    ingress_routine_editor: bool = True
 
 
 @dataclass(frozen=True)
@@ -385,6 +387,7 @@ def load_config(path: str | Path) -> AppConfig:
             ),
             ingress_port=ingress_port,
             ingress_new_connections_controls=_as_bool(network.get("ingress_new_connections_controls"), True),
+            ingress_routine_editor=_as_bool(network.get("ingress_routine_editor"), True),
         ),
         broker=BrokerConfig(
             mode=broker_mode,

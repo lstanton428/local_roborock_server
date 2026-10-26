@@ -176,6 +176,7 @@ def test_supervisor_serves_the_ingress_page_only_when_configured(tmp_path, monke
     assert page.status_code == 200
     panel = TestClient(ingress["app"], client=(HA_INGRESS_PROXY, 50000))
     assert panel.get("/api/status").json()["controls"] is True
+    assert panel.get("/api/routines").json()["editor"] is True
     asyncio.run(supervisor.stop())
     assert supervisor._ingress_server is None
 
@@ -187,4 +188,13 @@ def test_supervisor_serves_the_ingress_page_only_when_configured(tmp_path, monke
     assert panel.get("/api/status").json()["controls"] is False
     assert panel.post("/api/new-connections", json={"enabled": False}).status_code == 403
     assert supervisor.new_connections_enabled() is True
+    asyncio.run(supervisor.stop())
+
+    started.clear()
+    config = replace(config, network=replace(config.network, ingress_routine_editor=False))
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    asyncio.run(supervisor.start())
+    panel = TestClient(started[-1]["app"], client=(HA_INGRESS_PROXY, 50000))
+    assert panel.get("/api/routines").json()["editor"] is False
+    assert panel.post("/api/routines", json={"name": "x", "steps": []}).status_code == 403
     asyncio.run(supervisor.stop())

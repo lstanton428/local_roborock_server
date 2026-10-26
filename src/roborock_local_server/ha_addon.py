@@ -22,6 +22,7 @@ DEFAULT_OPTIONS: dict[str, Any] = {
     "advertised_https_port": 0,
     "advertised_mqtt_tls_port": 0,
     "ingress_new_connections_controls": True,
+    "ingress_routine_editor": True,
     "region": "us",
     "log_max_size_mb": LoggingConfig.max_size_mb,
     "log_backup_count": LoggingConfig.backup_count,
@@ -246,6 +247,11 @@ def _render_config_toml(
         ingress_controls = True
     if not isinstance(ingress_controls, bool):
         raise ValueError("ingress_new_connections_controls must be true or false")
+    routine_editor = merged.get("ingress_routine_editor")
+    if routine_editor is None:
+        routine_editor = True
+    if not isinstance(routine_editor, bool):
+        raise ValueError("ingress_routine_editor must be true or false")
     listener_mode = str(merged.get("listener_mode", "local_tls") or "local_tls").strip().lower() or "local_tls"
     if listener_mode != "local_tls":
         # The add-on always terminates its own TLS; external_tls is Docker-only.
@@ -362,6 +368,7 @@ def _render_config_toml(
         f"advertised_mqtt_tls_port = {advertised_mqtt_tls_port}",
         f"ingress_port = {INGRESS_PORT}",
         f"ingress_new_connections_controls = {_toml_bool(ingress_controls)}",
+        f"ingress_routine_editor = {_toml_bool(routine_editor)}",
         f"region = {_toml_string(region)}",
         *(
             [f"trusted_proxies = [{', '.join(_toml_string(item) for item in trusted_proxies)}]"]

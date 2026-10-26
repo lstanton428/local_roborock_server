@@ -28,7 +28,12 @@ from roborock.data import RRiot, Reference, RoborockInCleaning, StatusV2
 from roborock.exceptions import RoborockUnsupportedFeature
 from roborock.mqtt.roborock_session import create_mqtt_session
 from roborock.protocol import create_mqtt_decoder, create_mqtt_encoder, create_mqtt_params
-from roborock.protocols.v1_protocol import RequestMessage, create_security_data, decode_rpc_response
+from roborock.protocols.v1_protocol import (
+    RequestMessage,
+    create_map_response_decoder,
+    create_security_data,
+    decode_rpc_response,
+)
 from roborock.roborock_message import RoborockDataProtocol, RoborockMessage, RoborockMessageProtocol
 from roborock.roborock_typing import RoborockCommand
 
@@ -41,6 +46,7 @@ __all__ = [
     "RoutineStep",
     "commands_for_step",
     "parse_scene_steps",
+    "routine_device_record",
     "scene_device_id",
     "stored_scene_zones",
 ]
@@ -521,6 +527,7 @@ class _RoutineMqttClient:
         self._session = None
         self._unsubscribe = None
         self._pending: dict[int, asyncio.Future[Any]] = {}
+        self._pending_maps: dict[int, asyncio.Future[bytes]] = {}
 
         localkey = str(device.get("localkey") or "").strip() or context.localkey
         self._rriot = self._create_rriot(localkey=localkey)
@@ -528,6 +535,7 @@ class _RoutineMqttClient:
         self._security_data = create_security_data(self._rriot)
         self._encoder = create_mqtt_encoder(localkey)
         self._decoder = create_mqtt_decoder(localkey)
+        self._map_decoder = create_map_response_decoder(self._security_data)
 
         mqtt_username = self._mqtt_params.username
         device_id = str(device.get("duid") or "").strip()
@@ -590,6 +598,9 @@ class _RoutineMqttClient:
 
         for message in messages:
             protocol_value = int(getattr(message.protocol, "value", message.protocol))
+            if protocol_value == RoborockMessageProtocol.MAP_RESPONSE.value:
+                self._on_map_response(message)
+                continue
             if protocol_value != RoborockMessageProtocol.RPC_RESPONSE.value:
                 continue
             dps = _response_dps(message)
@@ -602,12 +613,29 @@ class _RoutineMqttClient:
                 continue
 
             future = self._pending.pop(response.request_id, None)
+            if future is None and response.api_error is not None:
+                # A refused map request is answered over RPC, not with a map.
+                future = self._pending_maps.pop(response.request_id, None)
             if future is None or future.done():
                 continue
             if response.api_error is not None:
                 future.set_exception(response.api_error)
             else:
                 future.set_result(response.data)
+
+    def _on_map_response(self, message: RoborockMessage) -> None:
+        """Resolve a get_map_v1 request; the map arrives as its own protocol 301 message."""
+        try:
+            response = self._map_decoder(message)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("Failed to decode map response: %s", exc)
+            return
+        # Map responses for other clients carry their endpoint, not ours.
+        if response is None:
+            return
+        future = self._pending_maps.pop(response.request_id, None)
+        if future is not None and not future.done():
+            future.set_result(response.data)
 
     async def send_command(
         self,
@@ -616,12 +644,26 @@ class _RoutineMqttClient:
         *,
         timeout: float = _COMMAND_TIMEOUT_SECONDS,
     ) -> Any:
+        return await self._request(command, params, timeout=timeout, pending=self._pending)
+
+    async def get_map_v1(self, *, timeout: float = _COMMAND_TIMEOUT_SECONDS) -> bytes:
+        """Read the current map; read-only, the robot only sends its map data back."""
+        return await self._request(RoborockCommand.GET_MAP_V1, None, timeout=timeout, pending=self._pending_maps)
+
+    async def _request(
+        self,
+        command: RoborockCommand | str,
+        params: dict[str, Any] | list[Any] | None,
+        *,
+        timeout: float,
+        pending: dict[int, asyncio.Future[Any]],
+    ) -> Any:
         if self._session is None:
             raise RoutineExecutionError("Routine MQTT client is not connected")
 
         request = RequestMessage(method=command, params=params)
         future = asyncio.get_running_loop().create_future()
-        self._pending[request.request_id] = future
+        pending[request.request_id] = future
         message = request.encode_message(
             RoborockMessageProtocol.RPC_REQUEST,
             security_data=self._security_data,
@@ -636,7 +678,7 @@ class _RoutineMqttClient:
                 f"Command {_command_name(command)} timed out after {timeout}s"
             ) from exc
         finally:
-            self._pending.pop(request.request_id, None)
+            pending.pop(request.request_id, None)
 
     async def get_status(self) -> StatusV2:
         response = await self.send_command(RoborockCommand.GET_STATUS)
@@ -803,6 +845,27 @@ class _RoutineMqttClient:
             await asyncio.sleep(_STATUS_POLL_INTERVAL_SECONDS)
 
 
+def routine_device_record(context: ServerContext, device_id: str) -> dict[str, str]:
+    """The runtime credentials a routine client needs to talk to this device."""
+    creds = context.runtime_credentials
+    if creds is None:
+        return {
+            "did": "",
+            "duid": device_id,
+            "name": device_id,
+            "model": "",
+            "localkey": context.localkey,
+        }
+
+    device = creds.device_for_selector(device_id)
+    if device is None:
+        raise RoutineExecutionError(f"Device {device_id} not found in runtime credentials")
+    localkey = str(device.get("localkey") or "").strip()
+    if not localkey:
+        raise RoutineExecutionError(f"Device {device_id} is missing localkey in runtime credentials")
+    return device
+
+
 class RoutineRunner:
     def __init__(self, context: ServerContext) -> None:
         self._context = context
@@ -916,23 +979,7 @@ class RoutineRunner:
             )
 
     def _device_record(self, device_id: str) -> dict[str, str]:
-        creds = self._context.runtime_credentials
-        if creds is None:
-            return {
-                "did": "",
-                "duid": device_id,
-                "name": device_id,
-                "model": "",
-                "localkey": self._context.localkey,
-            }
-
-        device = creds.device_for_selector(device_id)
-        if device is None:
-            raise RoutineExecutionError(f"Device {device_id} not found in runtime credentials")
-        localkey = str(device.get("localkey") or "").strip()
-        if not localkey:
-            raise RoutineExecutionError(f"Device {device_id} is missing localkey in runtime credentials")
-        return device
+        return routine_device_record(self._context, device_id)
 
     def _inventory_scene_tids(self, *, device_id: str, current_scene: dict[str, Any]) -> list[str]:
         tids: list[str] = []

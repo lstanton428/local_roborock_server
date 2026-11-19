@@ -5,7 +5,9 @@ FROM ghcr.io/astral-sh/uv:0.10.8@sha256:88234bc9e09c2b2f6d176a3daf411419eb0370d4
 # coturn is built from a pinned upstream release because Debian 13 ships 4.6.1,
 # which has unfixed unauthenticated STUN/TURN bugs (for example CVE-2026-104074
 # and CVE-2026-68552). Only turnserver is built, without database backends: the
-# add-on uses a static lt-cred-mech user. Bump COTURN_VERSION and COTURN_SHA256
+# add-on uses a static lt-cred-mech user. libmicrohttpd is a required build
+# dependency for coturn's Prometheus exporter, which stays off: the add-on
+# never passes --prometheus. Bump COTURN_VERSION and COTURN_SHA256
 # together by hand; get the checksum with
 #   curl -fsSL https://github.com/coturn/coturn/archive/refs/tags/<version>.tar.gz | sha256sum
 FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS coturn
@@ -20,6 +22,7 @@ RUN apt-get update \
     cmake \
     curl \
     libevent-dev \
+    libmicrohttpd-dev \
     libssl-dev \
     pkg-config \
   && curl -fsSL -o /tmp/coturn.tar.gz "https://github.com/coturn/coturn/archive/refs/tags/${COTURN_VERSION}.tar.gz" \
@@ -53,6 +56,7 @@ RUN apt-get update \
     libevent-extra-2.1-7t64 \
     libevent-openssl-2.1-7t64 \
     libevent-pthreads-2.1-7t64 \
+    libmicrohttpd12t64 \
     mosquitto \
     openssl \
   && rm -rf /var/lib/apt/lists/*

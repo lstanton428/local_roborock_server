@@ -108,6 +108,27 @@ def test_acme_sh_is_downloaded_by_tag_and_checksummed() -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", args.get("ACME_SH_SHA256", "")), "ACME_SH_SHA256 must be a SHA-256"
 
 
+def test_coturn_is_built_from_a_checksummed_release_not_debian() -> None:
+    runs = [cmd for cmd in _run_commands() if "coturn/coturn" in cmd]
+    assert len(runs) == 1, "expected exactly one RUN that downloads coturn"
+    command = runs[0]
+    assert "/archive/refs/tags/" in command, "coturn must be fetched from a release tag"
+    download_at = command.index("coturn/coturn")
+    check_at = command.find("sha256sum -c")
+    assert check_at > download_at, "coturn download must be followed by `sha256sum -c`"
+    assert command.find("tar ") > check_at, "coturn must be verified before it is extracted"
+
+    args = dict(
+        args.split("=", 1) for keyword, args in _instructions() if keyword == "ARG" and "=" in args
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", args.get("COTURN_SHA256", "")), "COTURN_SHA256 must be a SHA-256"
+    # Debian 13's coturn (4.6.1) has unfixed unauthenticated bugs; never install it from apt.
+    apt_packages = {
+        token for tokens in _shell_segments() if tokens[:2] == ["apt-get", "install"] for token in tokens[2:]
+    }
+    assert "coturn" not in apt_packages
+
+
 def test_requirement_file_pip_installs_require_hashes() -> None:
     requirement_installs = [args for args in _pip_installs() if "-r" in args or "--requirement" in args]
     assert requirement_installs, "expected pip to install from hash-pinned requirement files"

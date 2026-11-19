@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1-hardened.7
+
+Security update. No settings change and no re-pairing is needed.
+
+- The TURN relay used for camera live view now runs coturn 4.19.2, built from the upstream release. Debian's coturn 4.6.1 had unfixed bugs that let anyone who could reach UDP 3478 leak server memory (CVE-2026-104074) and break the STUN parser (CVE-2026-68552), plus several relay-restriction bypasses.
+- Python dependencies updated to fixed releases: starlette 1.10 (form size limits were ignored for URL-encoded bodies, CVE-2026-54283), cryptography 50 (bundled OpenSSL, CVE-2026-69247/69248/69249), certifi 2026.10.23 (removes the compromised emSign roots), aiohttp 3.14.5, urllib3 2.8, anyio 4.16 and idna 3.20.
+- The image is built on a current `python:3.11-slim` and applies Debian security updates at build time.
+- Includes upstream changes up to 2026-11-15: the agreement route, fan power from `set_clean_motor_mode`, device rename, and 64 persisted protocol sessions instead of 8.
+
 ## 1.2.1-hardened.6
 
 - The Roborock panel in Home Assistant now lists the vacuum's routines with **Run**, **Edit**, **Rename** and **Delete**, and a **New routine** button. Draw zones on the vacuum's live map or pick rooms in cleaning order, and give each step its own suction, water, mop route and repeat. Routines are saved in the Roborock app's format, so the server, the Home Assistant Roborock integration and LocalRock run them. Zones drawn in the panel run from their coordinates and nothing is written to the vacuum. Each change is logged with the Home Assistant user's name.

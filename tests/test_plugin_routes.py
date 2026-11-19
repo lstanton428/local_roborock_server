@@ -715,4 +715,3 @@ def test_plugin_proxy_bounds_remembered_failures(tmp_path: Path, monkeypatch) ->
     # The oldest failure was dropped to stay within the bound, so it is fetched again.
     assert requested == sources + sources[:1]
     assert len(plugin_common._plugin_downloads._failures) == 2
-

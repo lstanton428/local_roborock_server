@@ -13,6 +13,10 @@ from shared.data_helpers import as_bool, as_int, default_home_id, default_produc
 from shared.http_helpers import wrap_response
 from shared.inventory_io import WEB_API_INVENTORY_FILE, load_inventory, write_inventory
 
+from .routes.api.v1.agreement import build_check_app_agreement as _build_check_app_agreement_v1
+from .routes.api.v1.agreement import match_check_app_agreement as _match_check_app_agreement_v1
+from .routes.api.v1.agreement import build_product_agreement_and_policy as _build_product_agreement_and_policy_v1
+from .routes.api.v1.agreement import match_product_agreement_and_policy as _match_product_agreement_and_policy_v1
 from .routes.api.v1.appfeatureplugin import build as _build_app_feature_plugin
 from .routes.api.v1.appfeatureplugin import match as _match_app_feature_plugin
 from .routes.api.v1.appconfig import build as _build_app_config_v1
@@ -107,7 +111,9 @@ from .routes.auth.login import match_login_password_submit as _match_login_passw
 from .routes.auth.login import match_login_sms_code_send as _match_login_sms_code_send_v1
 from .routes.user.devices.detail import build as _build_get_device
 from .routes.user.devices.detail import build_extra as _build_get_device_extra
+from .routes.user.devices.detail import build_put as _build_put_device
 from .routes.user.devices.detail import match as _match_get_device
+from .routes.user.devices.detail import match_put as _match_put_device
 from .routes.user.devices.detail import match_extra as _match_get_device_extra
 from .routes.user.deviceshare import build_received_devices as _build_get_received_devices
 from .routes.user.deviceshare import build_rooms as _build_get_shared_device_rooms
@@ -571,6 +577,12 @@ def default_endpoint_rules() -> Sequence[EndpointRule]:
         EndpointRule("country_version", _match_country_version_v1, _build_country_version_v1),
         EndpointRule("country_list", _match_country_list_v1, _build_country_list_v1),
         EndpointRule("agreement_latest_v4", _match_agreement_latest_v4, _build_agreement_latest_v4),
+        EndpointRule("check_app_agreement_v1", _match_check_app_agreement_v1, _build_check_app_agreement_v1),
+        EndpointRule(
+            "product_agreement_and_policy_v1",
+            _match_product_agreement_and_policy_v1,
+            _build_product_agreement_and_policy_v1,
+        ),
         EndpointRule("get_home_detail", _match_get_home_detail_v1, _build_get_home_detail_v1),
         EndpointRule("user_info", _match_user_info_v1, _build_user_info_v1),
         EndpointRule("app_config", _match_app_config_v1, _build_app_config_v1),
@@ -593,6 +605,7 @@ def default_endpoint_rules() -> Sequence[EndpointRule]:
         EndpointRule("put_scene_validity", _match_put_scene_validity, _build_put_scene_validity),
         EndpointRule("execute_scene", _match_execute_scene, _build_execute_scene),
         EndpointRule("delete_scene", _match_delete_scene, _build_delete_scene),
+        EndpointRule("put_device", _match_put_device, _build_put_device),
         EndpointRule("get_device", _match_get_device, _build_get_device),
         EndpointRule("get_device_extra", _match_get_device_extra, _build_get_device_extra),
         EndpointRule("get_schedules", _match_get_schedules, _build_get_schedules),

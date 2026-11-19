@@ -1976,3 +1976,33 @@ def test_onboarding_nc_from_second_vacuum_does_not_adopt_selected_record_by_mode
     record = supervisor.runtime_credentials.resolve_device(duid="cloud-q7-a")
     assert record["did"] == ""
     assert record["localkey"] == "local-key-a"
+
+
+def test_create_room_returns_bare_id_in_result_and_object_in_data(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.inventory_path.write_text(
+        json.dumps({"home": {"id": 1316433, "name": "My Home", "rooms": [{"id": 10283928, "name": "Kitchen"}]}}) + "\n",
+        encoding="utf-8",
+    )
+    _seed_protocol_snapshot(paths.cloud_snapshot_path)
+
+    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    client = TestClient(supervisor.app)
+
+    path = "/user/homes/1316433/rooms"
+    response = client.post(
+        path,
+        data={"name": "Study"},
+        headers=_hawk_headers(paths.cloud_snapshot_path, path, form_values={"name": "Study"}),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["result"], int)
+    assert body["data"]["id"] == body["result"]
+    assert body["data"]["name"] == "Study"
+    assert body["data"]["created"] is True
+
